@@ -1,0 +1,132 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ---------------------------------------------------------
+    // Helper Functions
+    // ---------------------------------------------------------
+    
+    // Check if user is logged in
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Check if user is the owner of a document
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // Fetch the parent board data
+    function getBoardData(boardId) {
+      return get(/databases/$(database)/documents/boards/$(boardId)).data;
+    }
+
+    // Check if the board is writable by guests (Edit Mode)
+    function isBoardWritable(boardId) {
+      let board = getBoardData(boardId);
+      return board.privacy != 'private' && 
+             (!('guestPermission' in board) || board.guestPermission == 'edit');
+    }
+
+    // Check if user is the owner of the board
+    function isBoardOwner(boardId) {
+      return isOwner(getBoardData(boardId).ownerId);
+    }
+    
+    // ---------------------------------------------------------
+    // Collections
+    // ---------------------------------------------------------
+
+    // 1. Boards Collection
+    match /boards/{boardId} {
+      
+      // 讀取權限：
+      // - 公開/密碼看板 -> 所有人可讀
+      // - 私密看板 -> 僅擁有者可讀
+      allow read: if resource.data.privacy == 'public' || 
+                     resource.data.privacy == 'password' || 
+                     isOwner(resource.data.ownerId);
+      
+      // 建立：任何已登入用戶
+      allow create: if isAuthenticated();
+      
+      // 更新/刪除：僅擁有者
+      allow update, delete: if isOwner(resource.data.ownerId);
+
+      // -------------------------------------------------------
+      // 子集合：Sections (分區)
+      // -------------------------------------------------------
+      match /sections/{sectionId} {
+        // 讀取
+        allow read: if getBoardData(boardId).privacy != 'private' || isBoardOwner(boardId);
+        
+        // 寫入：看板擁有者 或 開放編輯權限
+        allow write: if isBoardOwner(boardId) || isBoardWritable(boardId);
+      }
+
+      // -------------------------------------------------------
+      // 子集合：Posts (貼文)
+      // -------------------------------------------------------
+      match /posts/{postId} {
+        // 讀取
+        allow read: if (getBoardData(boardId).privacy != 'private' || isBoardOwner(boardId)) && 
+                       (resource.data.status == 'approved' || 
+                        !('status' in resource.data) ||
+                        isOwner(resource.data.author.uid) || 
+                        isBoardOwner(boardId) ||
+                        resource.data.author.uid == getBoardData(boardId).ownerId);
+        
+        // 建立/刪除：必須擁有者 或 開放編輯 (View Mode 不可建立/刪除)
+        allow create, delete: if isBoardOwner(boardId) || isBoardWritable(boardId);
+        
+        // 更新：
+        // 1. 擁有者或編輯模式 -> 允許所有更新
+        // 2. 檢視模式 (View Mode) -> 僅允許更新 'likes' 欄位
+        allow update: if isBoardOwner(boardId) || 
+                      isBoardWritable(boardId) || 
+                      (getBoardData(boardId).privacy != 'private' && 
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes']));
+        
+        // 讀取過濾 (審核機制)：
+        // - 已核准專案：所有人可讀
+        // - 待審核專案：僅作者與看板擁有者可讀
+        function isVisiblePost(data) {
+          return data.status == 'approved' || 
+                 !('status' in data) ||
+                 isOwner(data.author.uid) || 
+                 isBoardOwner(boardId) ||
+                 data.author.uid == getBoardData(boardId).ownerId;
+        }
+
+        match /comments/{commentId} {
+          allow read: if isVisiblePost(get(/databases/$(database)/documents/boards/$(boardId)/posts/$(postId)).data) && 
+                         (resource.data.status == 'approved' || isOwner(resource.data.author.uid) || isBoardOwner(boardId));
+          allow write: if getBoardData(boardId).privacy != 'private' || isBoardOwner(boardId);
+        }
+      }
+    }
+
+    // 2. Folders Collection
+    match /folders/{folderId} {
+      allow read, update, delete: if isOwner(resource.data.ownerId);
+      allow create: if isAuthenticated();
+    }
+
+    // ---------------------------------------------------------
+    // 3. System Configurations
+    // ---------------------------------------------------------
+    match /configs/cloudinary {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+
+    match /configs/cloudinary_secrets {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /configs/global {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+  }
+}
