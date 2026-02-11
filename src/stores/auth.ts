@@ -51,8 +51,9 @@ export const useAuthStore = defineStore('auth', () => {
 
             try {
                 const { getDoc, doc, getFirestore } = await import('firebase/firestore');
+                const { DB_PREFIX } = await import('../composables/useAppConfig');
                 const db = getFirestore();
-                const docSnap = await getDoc(doc(db, 'configs', 'global'));
+                const docSnap = await getDoc(doc(db, `${DB_PREFIX}configs`, 'global'));
                 if (docSnap.exists()) {
                     allowed = docSnap.data().whitelistEmails || [];
                     // Update global config state too

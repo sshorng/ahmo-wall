@@ -22,7 +22,7 @@ const {
   isUploading: cloudinaryUploading,
   uploadProgress
 } = useCloudinary();
-import { useAppConfig } from '../composables/useAppConfig';
+import { useAppConfig, DB_PREFIX } from '../composables/useAppConfig';
 const { config: appConfig, generateShareLink } = useAppConfig();
 const modal = useModal();
 
@@ -229,7 +229,7 @@ watch(() => currentBoard.value?.defaultSort, (newDefault) => {
 watch(currentSort, async (newSort) => {
     if (isOwner.value && boardId.value && currentBoard.value && currentBoard.value.defaultSort !== newSort) {
         try {
-            await updateDoc(doc(db, 'boards', boardId.value), { defaultSort: newSort });
+            await updateDoc(doc(db, `${DB_PREFIX}boards`, boardId.value), { defaultSort: newSort });
         } catch (e) {
             console.error('Failed to sync sort:', e);
         }
@@ -410,7 +410,7 @@ const likedPosts = reactive<Record<string, boolean>>({});
 
 const loadGlobalSettings = async () => {
     try {
-        const docSnap = await getDoc(doc(db, 'configs', 'global'));
+        const docSnap = await getDoc(doc(db, `${DB_PREFIX}configs`, 'global'));
         if (docSnap.exists()) {
             const data = docSnap.data();
             appConfig.appTitle = data.siteTitle || '阿墨互動牆';
@@ -430,7 +430,7 @@ const saveGlobalSettings = async () => {
 
     try {
         const { setDoc } = await import('firebase/firestore');
-        await setDoc(doc(db, 'configs', 'global'), {
+        await setDoc(doc(db, `${DB_PREFIX}configs`, 'global'), {
             siteTitle: appConfig.appTitle,
             whitelistEmails: appConfig.allowedEmails,
             updatedAt: new Date()
@@ -446,7 +446,7 @@ const saveGlobalSettings = async () => {
 const loadCloudinaryConfig = async () => {
     try {
         // 1. 載入基本參數 (公開)
-        const configDoc = await getDoc(doc(db, 'configs', 'cloudinary'));
+        const configDoc = await getDoc(doc(db, `${DB_PREFIX}configs`, 'cloudinary'));
         if (configDoc.exists()) {
             const data = configDoc.data();
             appConfig.cloudinary.cloudName = data.cloudName || '';
@@ -456,7 +456,7 @@ const loadCloudinaryConfig = async () => {
 
         // 2. 只有登入管理員才載入機密金鑰 (用於刪除檔案)
         if (authStore.user) {
-            const secretsDoc = await getDoc(doc(db, 'configs', 'cloudinary_secrets'));
+            const secretsDoc = await getDoc(doc(db, `${DB_PREFIX}configs`, 'cloudinary_secrets'));
             if (secretsDoc.exists()) {
                 const sData = secretsDoc.data();
                 appConfig.cloudinary.apiKey = sData.apiKey || '';
@@ -478,14 +478,14 @@ const saveCloudinaryConfig = async () => {
     try {
         const { setDoc } = await import('firebase/firestore');
         // A. 基本參數
-        await setDoc(doc(db, 'configs', 'cloudinary'), {
+        await setDoc(doc(db, `${DB_PREFIX}configs`, 'cloudinary'), {
             cloudName: appConfig.cloudinary.cloudName,
             uploadPreset: appConfig.cloudinary.uploadPreset,
             updatedAt: new Date()
         }, { merge: true });
 
         // B. 機密參數
-        await setDoc(doc(db, 'configs', 'cloudinary_secrets'), {
+        await setDoc(doc(db, `${DB_PREFIX}configs`, 'cloudinary_secrets'), {
             apiKey: appConfig.cloudinary.apiKey,
             apiSecret: appConfig.cloudinary.apiSecret,
             updatedAt: new Date()
@@ -924,7 +924,7 @@ const handleBatchApprove = async () => {
     
     try {
          const pending = boardStore.posts.filter(p => p.status === 'pending');
-         const updates = pending.map(p => updateDoc(doc(db, 'boards', boardId.value, 'posts', p.id), { status: 'approved' }));
+         const updates = pending.map(p => updateDoc(doc(db, `${DB_PREFIX}boards`, boardId.value, 'posts', p.id), { status: 'approved' }));
          await Promise.all(updates);
          modal.success(`已核准 ${pending.length} 則貼文！`);
     } catch (e: any) {
@@ -978,7 +978,7 @@ const loadBoard = async () => {
   showPasswordModal.value = false;
   
   try {
-    const boardDoc = await getDoc(doc(db, 'boards', boardId.value));
+    const boardDoc = await getDoc(doc(db, `${DB_PREFIX}boards`, boardId.value));
     
     if (boardDoc.exists()) {
       const boardData = {
@@ -1060,7 +1060,7 @@ const saveBoardSettings = async () => {
     if (!currentBoard.value) return;
     
     try {
-        await updateDoc(doc(db, 'boards', boardId.value), {
+        await updateDoc(doc(db, `${DB_PREFIX}boards`, boardId.value), {
             title: currentBoard.value.title,
             description: currentBoard.value.description,
             layout: currentBoard.value.layout,
@@ -1242,7 +1242,7 @@ const saveEditSection = async (section: Section) => {
   if (!editingSectionId.value) return;
   if (editTitle.value !== section.title && editTitle.value.trim()) {
     // Update section title in Firestore directly (since we don't have updateSection in store yet)
-    await updateDoc(doc(db, 'boards', boardId.value, 'sections', section.id), {
+    await updateDoc(doc(db, `${DB_PREFIX}boards`, boardId.value, 'sections', section.id), {
        title: editTitle.value.trim() 
     });
   }
@@ -1270,7 +1270,7 @@ const saveEditBoardTitle = async () => {
   if (!editingBoardTitle.value || !currentBoard.value) return;
   if (editTitle.value !== currentBoard.value.title && editTitle.value.trim()) {
     currentBoard.value.title = editTitle.value.trim();
-    await updateDoc(doc(db, 'boards', boardId.value), { title: editTitle.value.trim() });
+    await updateDoc(doc(db, `${DB_PREFIX}boards`, boardId.value), { title: editTitle.value.trim() });
   }
   editingBoardTitle.value = false;
 };
@@ -1288,7 +1288,7 @@ const saveEditBoardDesc = async () => {
     if (!editingBoardDesc.value || !currentBoard.value) return;
     if (editDesc.value !== currentBoard.value.description) {
         currentBoard.value.description = editDesc.value.trim();
-        await updateDoc(doc(db, 'boards', boardId.value), { description: editDesc.value.trim() });
+        await updateDoc(doc(db, `${DB_PREFIX}boards`, boardId.value), { description: editDesc.value.trim() });
     }
     editingBoardDesc.value = false;
 };
@@ -1377,7 +1377,7 @@ const handleWallReorder = async () => {
     try {
         const orderedIds = localWallPosts.value.map(p => p.id);
         const updates = orderedIds.map((id, index) => 
-            updateDoc(doc(db, 'boards', boardId.value, 'posts', id), {
+            updateDoc(doc(db, `${DB_PREFIX}boards`, boardId.value, 'posts', id), {
                 order: index
             })
         );

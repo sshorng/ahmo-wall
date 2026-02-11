@@ -3,7 +3,7 @@ import { ref, onMounted, computed, watch, reactive } from 'vue';
 import { useRouter } from 'vue-router';
 import { useBoardStore, type Board } from '../stores/board';
 import { useAuthStore } from '../stores/auth';
-import { useAppConfig, configUtils } from '../composables/useAppConfig';
+import { useAppConfig, configUtils, DB_PREFIX } from '../composables/useAppConfig';
 import { useModal } from '../composables/useModal';
 import { doc, deleteDoc, getDoc, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -39,7 +39,7 @@ const loadGlobalSettings = async () => {
     }
     try {
         // 1. 載入一般全域設定 (現在是公開可讀)
-        const docSnap = await getDoc(doc(db, 'configs', 'global'));
+        const docSnap = await getDoc(doc(db, `${DB_PREFIX}configs`, 'global'));
         if (docSnap.exists()) {
             const data = docSnap.data();
             localConfig.appTitle = data.siteTitle || '阿墨互動牆';
@@ -52,7 +52,7 @@ const loadGlobalSettings = async () => {
         }
 
         // 2. 載入 Cloudinary 基本連線 (公開)
-        const cloudinarySnap = await getDoc(doc(db, 'configs', 'cloudinary'));
+        const cloudinarySnap = await getDoc(doc(db, `${DB_PREFIX}configs`, 'cloudinary'));
         if (cloudinarySnap.exists()) {
             const cData = cloudinarySnap.data();
             localConfig.cloudinary.cloudName = cData.cloudName || localConfig.cloudinary.cloudName;
@@ -63,7 +63,7 @@ const loadGlobalSettings = async () => {
 
         // 3. 載入 Cloudinary 私密金鑰 (需登入)
         if (authStore.user) {
-            const secretsSnap = await getDoc(doc(db, 'configs', 'cloudinary_secrets'));
+            const secretsSnap = await getDoc(doc(db, `${DB_PREFIX}configs`, 'cloudinary_secrets'));
             if (secretsSnap.exists()) {
                 const sData = secretsSnap.data();
                 localConfig.cloudinary.apiKey = sData.apiKey || '';
@@ -80,7 +80,7 @@ const saveGlobalSettings = async () => {
     if (!db || !authStore.user) return;
     try {
         const emails = whitelistTextInput.value.split(',').map(e => e.trim()).filter(e => e);
-        await setDoc(doc(db, 'configs', 'global'), {
+        await setDoc(doc(db, `${DB_PREFIX}configs`, 'global'), {
             siteTitle: localConfig.appTitle,
             whitelistEmails: emails,
             updatedAt: new Date()
@@ -130,14 +130,14 @@ const handleSaveConfig = async () => {
         } else {
             try {
                 // A. 儲存公開參數
-                await setDoc(doc(db, 'configs', 'cloudinary'), {
+                await setDoc(doc(db, `${DB_PREFIX}configs`, 'cloudinary'), {
                     cloudName: localConfig.cloudinary.cloudName,
                     uploadPreset: localConfig.cloudinary.uploadPreset,
                     updatedAt: new Date()
                 }, { merge: true });
 
                 // B. 儲存私密金鑰 (安全區塊)
-                await setDoc(doc(db, 'configs', 'cloudinary_secrets'), {
+                await setDoc(doc(db, `${DB_PREFIX}configs`, 'cloudinary_secrets'), {
                     apiKey: localConfig.cloudinary.apiKey || '',
                     apiSecret: localConfig.cloudinary.apiSecret || '',
                     updatedAt: new Date()
@@ -247,7 +247,7 @@ const handleDeleteBoard = async (board: Board) => {
     const confirmed = await modal.confirm(`確定要刪除看板「${board.title}」嗎？此動作無法復原。`);
     if (confirmed) {
          try {
-             await deleteDoc(doc(db, 'boards', board.id));
+             await deleteDoc(doc(db, `${DB_PREFIX}boards`, board.id));
              modal.success('看板已刪除');
          } catch (e: any) {
              modal.error('刪除失敗: ' + e.message);

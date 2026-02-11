@@ -16,6 +16,7 @@ import {
     type Unsubscribe
 } from 'firebase/firestore';
 import { useAuthStore } from './auth';
+import { DB_PREFIX } from '../composables/useAppConfig';
 
 // Types
 export interface Comment {
@@ -181,7 +182,7 @@ export const useBoardStore = defineStore('board', () => {
         // Remove orderBy to avoid needing a composite index in Firestore
         // We will sort in memory instead
         const q = query(
-            collection(db, 'boards'),
+            collection(db, `${DB_PREFIX}boards`),
             where('ownerId', '==', authStore.user.uid)
         );
 
@@ -200,7 +201,7 @@ export const useBoardStore = defineStore('board', () => {
 
         // Subscribe to folders
         const folderQ = query(
-            collection(db, 'folders'),
+            collection(db, `${DB_PREFIX}folders`),
             where('ownerId', '==', authStore.user.uid)
         );
 
@@ -225,7 +226,7 @@ export const useBoardStore = defineStore('board', () => {
 
         // Subscribe to sections (Sort in client to avoid index issues)
         const sectionsQuery = query(
-            collection(db, 'boards', boardId, 'sections')
+            collection(db, `${DB_PREFIX}boards`, boardId, 'sections')
         );
 
         unsubscribeSections = onSnapshot(sectionsQuery, (snapshot) => {
@@ -244,7 +245,7 @@ export const useBoardStore = defineStore('board', () => {
 
         // Subscribe to posts (Sort in client to avoid index issues)
         const postsQuery = query(
-            collection(db, 'boards', boardId, 'posts')
+            collection(db, `${DB_PREFIX}boards`, boardId, 'posts')
         );
 
         unsubscribePosts = onSnapshot(postsQuery, (snapshot) => {
@@ -285,12 +286,12 @@ export const useBoardStore = defineStore('board', () => {
             createdAt: Timestamp.now()
         };
 
-        const docRef = await addDoc(collection(db, 'boards'), boardData);
+        const docRef = await addDoc(collection(db, `${DB_PREFIX}boards`), boardData);
 
         // Create default sections for Shelf and Stream layouts
         // User requested single 'Uncategorized' section
         if (boardData.layout === 'shelf' || boardData.layout === 'stream') {
-            await addDoc(collection(db, 'boards', docRef.id, 'sections'), {
+            await addDoc(collection(db, `${DB_PREFIX}boards`, docRef.id, 'sections'), {
                 title: '未分類',
                 color: '#16a34a',
                 order: 0
@@ -310,14 +311,21 @@ export const useBoardStore = defineStore('board', () => {
         delete updateData.createdAt;
         delete updateData.ownerId; // Owner cannot be changed easily
 
-        await updateDoc(doc(db, 'boards', boardId), updateData);
+        await updateDoc(doc(db, `${DB_PREFIX}boards`, boardId), updateData);
+    };
+
+    /**
+     * Delete a board
+     */
+    const deleteBoard = async (boardId: string) => {
+        await deleteDoc(doc(db, `${DB_PREFIX}boards`, boardId));
     };
 
     /**
      * Check board password
      */
     const checkBoardPassword = async (boardId: string, password: string): Promise<boolean> => {
-        const boardRef = doc(db, 'boards', boardId);
+        const boardRef = doc(db, `${DB_PREFIX}boards`, boardId);
         const boardSnap = await getDoc(boardRef);
         if (boardSnap.exists()) {
             const boardData = boardSnap.data() as Board;
@@ -332,7 +340,7 @@ export const useBoardStore = defineStore('board', () => {
      */
     const createSection = async (boardId: string, title: string, color: string = '#6b7280') => {
         const order = sections.value.length;
-        await addDoc(collection(db, 'boards', boardId, 'sections'), {
+        await addDoc(collection(db, `${DB_PREFIX}boards`, boardId, 'sections'), {
             title,
             color,
             order
@@ -348,12 +356,12 @@ export const useBoardStore = defineStore('board', () => {
 
         // Delete all posts
         const batch = postsToDelete.map(p =>
-            deleteDoc(doc(db, 'boards', boardId, 'posts', p.id))
+            deleteDoc(doc(db, `${DB_PREFIX}boards`, boardId, 'posts', p.id))
         );
         await Promise.all(batch);
 
         // Delete the section
-        await deleteDoc(doc(db, 'boards', boardId, 'sections', sectionId));
+        await deleteDoc(doc(db, `${DB_PREFIX}boards`, boardId, 'sections', sectionId));
     };
 
     /**
@@ -417,7 +425,7 @@ export const useBoardStore = defineStore('board', () => {
         const sectionPosts = posts.value.filter(p => p.sectionId === postData.sectionId);
         const order = sectionPosts.length;
 
-        await addDoc(collection(db, 'boards', boardId, 'posts'), cleanData({
+        await addDoc(collection(db, `${DB_PREFIX}boards`, boardId, 'posts'), cleanData({
             ...postData,
             order
         }));
@@ -427,21 +435,21 @@ export const useBoardStore = defineStore('board', () => {
      * Update a post
      */
     const updatePost = async (boardId: string, postId: string, data: Partial<Post>) => {
-        await updateDoc(doc(db, 'boards', boardId, 'posts', postId), cleanData(data));
+        await updateDoc(doc(db, `${DB_PREFIX}boards`, boardId, 'posts', postId), cleanData(data));
     };
 
     /**
      * Delete a post
      */
     const deletePost = async (boardId: string, postId: string) => {
-        await deleteDoc(doc(db, 'boards', boardId, 'posts', postId));
+        await deleteDoc(doc(db, `${DB_PREFIX}boards`, boardId, 'posts', postId));
     };
 
     /**
      * Approve a post
      */
     const approvePost = async (boardId: string, postId: string) => {
-        await updateDoc(doc(db, 'boards', boardId, 'posts', postId), { status: 'approved' });
+        await updateDoc(doc(db, `${DB_PREFIX}boards`, boardId, 'posts', postId), { status: 'approved' });
     };
 
     /**
@@ -451,14 +459,14 @@ export const useBoardStore = defineStore('board', () => {
         // Approve all posts
         const pendingPosts = posts.value.filter(p => p.status === 'pending');
         const postPromises = pendingPosts.map(p =>
-            updateDoc(doc(db, 'boards', boardId, 'posts', p.id), { status: 'approved' })
+            updateDoc(doc(db, `${DB_PREFIX}boards`, boardId, 'posts', p.id), { status: 'approved' })
         );
 
         // Approve all comments in all posts (including those already approved)
         const postWithPendingComments = posts.value.filter(p => p.comments?.some(c => c.status === 'pending'));
         const commentPromises = postWithPendingComments.map(async (p) => {
             const newComments = p.comments?.map(c => ({ ...c, status: 'approved' }));
-            return updateDoc(doc(db, 'boards', boardId, 'posts', p.id), { comments: newComments });
+            return updateDoc(doc(db, `${DB_PREFIX}boards`, boardId, 'posts', p.id), { comments: newComments });
         });
 
         await Promise.all([...postPromises, ...commentPromises]);
@@ -500,7 +508,7 @@ export const useBoardStore = defineStore('board', () => {
             createdAt: new Date()
         };
 
-        const postRef = doc(db, 'boards', boardId, 'posts', postId);
+        const postRef = doc(db, `${DB_PREFIX}boards`, boardId, 'posts', postId);
 
         // Let's use getDoc to get current comments array first to be safe
         const postDoc = await getDoc(postRef);
@@ -516,7 +524,7 @@ export const useBoardStore = defineStore('board', () => {
      * Approve a comment
      */
     const approveComment = async (boardId: string, postId: string, commentId: string) => {
-        const postRef = doc(db, 'boards', boardId, 'posts', postId);
+        const postRef = doc(db, `${DB_PREFIX}boards`, boardId, 'posts', postId);
         const postDoc = await getDoc(postRef);
         if (postDoc.exists()) {
             const currentComments = postDoc.data().comments || [];
@@ -532,7 +540,7 @@ export const useBoardStore = defineStore('board', () => {
      * Delete a comment
      */
     const deleteComment = async (boardId: string, postId: string, commentId: string) => {
-        const postRef = doc(db, 'boards', boardId, 'posts', postId);
+        const postRef = doc(db, `${DB_PREFIX}boards`, boardId, 'posts', postId);
         const postDoc = await getDoc(postRef);
         if (postDoc.exists()) {
             const currentComments = postDoc.data().comments || [];
@@ -545,7 +553,7 @@ export const useBoardStore = defineStore('board', () => {
      * Like a post
      */
     const likePost = async (boardId: string, postId: string, newLikes: number) => {
-        await updateDoc(doc(db, 'boards', boardId, 'posts', postId), {
+        await updateDoc(doc(db, `${DB_PREFIX}boards`, boardId, 'posts', postId), {
             likes: newLikes
         });
     };
@@ -554,7 +562,7 @@ export const useBoardStore = defineStore('board', () => {
      * Vote on a poll
      */
     const votePoll = async (boardId: string, postId: string, optionId: string, userId: string) => {
-        const postRef = doc(db, 'boards', boardId, 'posts', postId);
+        const postRef = doc(db, `${DB_PREFIX}boards`, boardId, 'posts', postId);
 
         // We use a transaction to ensure vote integrity
         try {
@@ -620,7 +628,7 @@ export const useBoardStore = defineStore('board', () => {
      */
     const reorderSections = async (boardId: string, orderedProjectIds: string[]) => {
         const batch = orderedProjectIds.map((id, index) =>
-            updateDoc(doc(db, 'boards', boardId, 'sections', id), { order: index })
+            updateDoc(doc(db, `${DB_PREFIX}boards`, boardId, 'sections', id), { order: index })
         );
         await Promise.all(batch);
     };
@@ -630,7 +638,7 @@ export const useBoardStore = defineStore('board', () => {
      */
     const reorderPosts = async (boardId: string, sectionId: string, orderedPostIds: string[]) => {
         const batch = orderedPostIds.map((id, index) =>
-            updateDoc(doc(db, 'boards', boardId, 'posts', id), {
+            updateDoc(doc(db, `${DB_PREFIX}boards`, boardId, 'posts', id), {
                 sectionId, // Update sectionId in case it moved
                 order: index
             })
@@ -640,7 +648,7 @@ export const useBoardStore = defineStore('board', () => {
 
     const createFolder = async (title: string) => {
         if (!authStore.user) return;
-        await addDoc(collection(db, 'folders'), {
+        await addDoc(collection(db, `${DB_PREFIX}folders`), {
             title,
             ownerId: authStore.user.uid,
             createdAt: Timestamp.now()
@@ -650,14 +658,14 @@ export const useBoardStore = defineStore('board', () => {
     const deleteFolder = async (folderId: string) => {
         // Move all boards in this folder to root (folderId = null)
         const boardsInFolder = boards.value.filter(b => b.folderId === folderId);
-        const updates = boardsInFolder.map(b => updateDoc(doc(db, 'boards', b.id), { folderId: null }));
+        const updates = boardsInFolder.map(b => updateDoc(doc(db, `${DB_PREFIX}boards`, b.id), { folderId: null }));
         await Promise.all(updates);
 
-        await deleteDoc(doc(db, 'folders', folderId));
+        await deleteDoc(doc(db, `${DB_PREFIX}folders`, folderId));
     };
 
     const moveBoardToFolder = async (boardId: string, folderId: string | null) => {
-        await updateDoc(doc(db, 'boards', boardId), { folderId });
+        await updateDoc(doc(db, `${DB_PREFIX}boards`, boardId), { folderId });
     };
 
     /**
@@ -689,6 +697,7 @@ export const useBoardStore = defineStore('board', () => {
         subscribeToBoard,
         createBoard,
         updateBoard,
+        deleteBoard,
         checkBoardPassword,
         createSection,
         createPost,

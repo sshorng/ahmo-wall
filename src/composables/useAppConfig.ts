@@ -1,6 +1,8 @@
 import { reactive, computed } from 'vue';
 
 const CONFIG_KEY = 'ahmo_app_config';
+export const APP_ID = 'ahmo-wall';
+export const DB_PREFIX = `${APP_ID}_`;
 
 export interface AppConfig {
     firebase: {
