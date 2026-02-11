@@ -217,7 +217,7 @@ export const useCloudinary = () => {
     /**
      * List files in a specific folder (Improved using Resources API)
      */
-    const listFolder = async (folder = 'ahmo-padlet/background') => {
+    const listFolder = async (folder = 'ahmo-wall/background') => {
         const { apiKey, apiSecret, cloudName } = config.cloudinary;
         if (!apiKey || !apiSecret) {
             console.warn('[Cloudinary] 缺少 API Key/Secret，無法列出清單');

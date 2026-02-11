@@ -672,7 +672,7 @@ const handleBackgroundUpload = async (e: Event) => {
         const compressedBlob = await compressImage(file);
         
         // Switch to Cloudinary
-        const folderName = `ahmo-padlet/background`;
+        const folderName = `ahmo-wall/background`;
         const result = await uploadFile(compressedBlob as any, folderName);
         
         if (result) {
@@ -757,7 +757,7 @@ const handlePostDrop = async (post: Post, e: DragEvent) => {
   
     for (let i = 0; i < files.length; i++) {
     try {
-      const folderName = `ahmo-padlet/${currentBoard.value?.title || 'Shared'}`;
+      const folderName = `ahmo-wall/${currentBoard.value?.title || 'Shared'}`;
       const result = await uploadFile(files[i], folderName);
       if (result) {
         // Use file type instead of Cloudinary resourceType for better precision
@@ -804,7 +804,7 @@ const handleNewPostDrop = async (sectionId: string, e: DragEvent) => {
   
   for (let i = 0; i < files.length; i++) {
     try {
-      const folderName = `ahmo-padlet/${currentBoard.value?.title || 'Shared'}`;
+      const folderName = `ahmo-wall/${currentBoard.value?.title || 'Shared'}`;
       const result = await uploadFile(files[i], folderName);
       if (result) {
         const fileType = files[i].type;
@@ -1306,7 +1306,7 @@ const handleFileSelect = async (event: Event) => {
   const file = input.files[0];
 
   try {
-    const folderName = `ahmo-padlet/${currentBoard.value?.title || 'Shared'}`;
+    const folderName = `ahmo-wall/${currentBoard.value?.title || 'Shared'}`;
     const result = await uploadFile(file, folderName);
     if (result) {
         const fileType = file.type;
