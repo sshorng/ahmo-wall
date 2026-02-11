@@ -40,7 +40,7 @@ const handleLogin = async () => {
         @click="handleLogin"
         :disabled="isLoading"
         class="w-full flex items-center justify-center gap-3 bg-white hover:bg-gray-50 text-gray-700 font-bold py-3.5 px-6 rounded-xl border border-gray-200 transition-all shadow-sm hover:shadow-md active:scale-95 disabled:opacity-70 disabled:cursor-not-allowed group">
-        <img src="https://www.svgrepo.com/show/475656/google-color.svg" class="w-6 h-6 group-hover:scale-110 transition-transform" alt="Google Logo" />
+        <img src="https://upload.wikimedia.org/wikipedia/commons/c/c1/Google_%22G%22_logo.svg" class="w-6 h-6 group-hover:scale-110 transition-transform" alt="Google Logo" />
         <span>{{ isLoading ? '登入中...' : '使用 Google 帳號登入' }}</span>
       </button>
 

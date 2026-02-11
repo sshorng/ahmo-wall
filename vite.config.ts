@@ -10,4 +10,13 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  server: {
+    proxy: {
+      '/unsplash-api': {
+        target: 'https://unsplash.com/napi',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/unsplash-api/, ''),
+      },
+    },
+  },
 })

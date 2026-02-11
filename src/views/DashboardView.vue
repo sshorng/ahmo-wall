@@ -544,6 +544,7 @@ const isLiked = (postId: string) => {
 
 const pendingAttachments = ref<any[]>([]);
 const fileInput = ref<HTMLInputElement | null>(null);
+const cameraInput = ref<HTMLInputElement | null>(null);
 const showSettingsModal = ref(false);
 const showShareModal = ref(false);
 const contentRefs = ref<Record<string, HTMLTextAreaElement | null>>({});
@@ -950,19 +951,40 @@ const submitPassword = async () => {
     }
 };
 
-// searchImages removed per user request
+// Unsplash Search
+const unsplashSearchQuery = ref('');
+const unsplashResults = ref<string[]>([]);
+const isSearchingUnsplash = ref(false);
 
-// Preset backgrounds with higher quality
-const presetBackgrounds = [
-    'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1600&q=80', // Mountains
-    'https://images.unsplash.com/photo-1501785888041-af3ef285b470?auto=format&fit=crop&w=1600&q=80', // Lake
-    'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=1600&q=80', // Forest
-    'https://images.unsplash.com/photo-1470770841072-f978cf4d019e?auto=format&fit=crop&w=1600&q=80', // Landscape
-    'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1600&q=80', // Field
-    'https://images.unsplash.com/photo-1469474968028-56623f02e42e?auto=format&fit=crop&w=1600&q=80', // Nature
-    'https://images.unsplash.com/photo-1447752875215-b2761acb3c5d?auto=format&fit=crop&w=1600&q=80', // Woods
-    'https://images.unsplash.com/photo-1472214103451-9374bd1c798e?auto=format&fit=crop&w=1600&q=80', // Scenic
-];
+const searchUnsplash = async () => {
+    if (!unsplashSearchQuery.value.trim()) return;
+    isSearchingUnsplash.value = true;
+    try {
+        // 使用 Vite 配置的代理路徑以解決 CORS 問題
+        const response = await fetch(`/unsplash-api/search/photos?query=${encodeURIComponent(unsplashSearchQuery.value)}&per_page=12`);
+        if (!response.ok) throw new Error('Network response was not ok');
+        const data = await response.json();
+        if (data.results) {
+            unsplashResults.value = data.results.map((img: any) => 
+                `${img.urls.raw}&auto=format&fit=crop&w=1600&q=80`
+            );
+        }
+    } catch (e) {
+        console.error('Unsplash search failed:', e);
+        // 若 fetch 失敗（例如 CORS），提示使用者或使用備案
+        modal.error('搜尋失敗，這可能是受到瀏覽器安全性限制。');
+    } finally {
+        isSearchingUnsplash.value = false;
+    }
+};
+
+const selectUnsplashImage = (url: string) => {
+    if (currentBoard.value) {
+        currentBoard.value.backgroundImage = url;
+    }
+};
+
+// Load board data
 
 // Load board data
 const loadBoard = async () => {
@@ -1447,18 +1469,38 @@ const submitPost = async (sectionId: string) => {
   });
 };
 
-// Create new section
-const showSectionPrompt = ref(false);
+// Create new section (Padlet-style inline creation)
+const isAddingSection = ref(false);
 const newSectionName = ref('');
+const newSectionInput = ref<HTMLInputElement | null>(null);
 const createSection = () => {
-  showSectionPrompt.value = true;
-  newSectionName.value = '';
+    isAddingSection.value = true;
+    newSectionName.value = '';
+    nextTick(() => {
+        newSectionInput.value?.focus();
+    });
+};
+
+const cancelAddingSection = () => {
+    isAddingSection.value = false;
+    newSectionName.value = '';
 };
 
 const confirmCreateSection = async () => {
-  if (!newSectionName.value.trim()) return;
-  await boardStore.createSection(boardId.value, newSectionName.value.trim());
-  showSectionPrompt.value = false;
+    const title = newSectionName.value.trim();
+    if (!title) {
+        isAddingSection.value = false;
+        return;
+    }
+    
+    try {
+        await boardStore.createSection(boardId.value, title);
+        isAddingSection.value = false;
+        newSectionName.value = '';
+    } catch (e: any) {
+        console.error('Failed to create section:', e);
+        modal.error('建立區段失敗：' + e.message);
+    }
 };
 
 
@@ -1816,7 +1858,21 @@ const formatRelativeTime = (date: Date) => {
           </div>
           <h2 class="text-3xl font-black text-white mb-4 tracking-tight">打造您的第一個區段</h2>
           <p class="text-slate-400 mb-10 text-lg font-medium text-center max-w-md leading-relaxed">在這個空間裡，您可以按主題或進度分欄。點擊右側的按鈕開始您的創作之旅！</p>
-          <button @click="createSection" 
+          <div v-if="isAddingSection" class="w-80 bg-white/10 backdrop-blur-md rounded-[2rem] p-6 border border-emerald-500/50 shadow-2xl animate-scale-in">
+            <input ref="newSectionInput"
+                   v-model="newSectionName" 
+                   @keydown.enter="confirmCreateSection"
+                   @keydown.esc="cancelAddingSection"
+                   @blur="confirmCreateSection"
+                   placeholder="輸入欄位名稱..." 
+                   class="w-full bg-white/10 text-white font-bold px-4 py-3 rounded-xl outline-none border border-white/10 focus:border-emerald-500 transition-all placeholder-white/30"
+                   autofocus />
+            <div class="flex justify-end gap-2 mt-4">
+              <button @click="cancelAddingSection" class="px-4 py-2 text-xs text-gray-400 hover:text-white font-bold transition-colors">取消</button>
+              <button @click="confirmCreateSection" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs rounded-xl font-bold shadow-lg transition-all">建立</button>
+            </div>
+          </div>
+          <button v-else @click="createSection" 
                   class="px-10 py-5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-[2rem] font-black text-xl transition-all shadow-2xl shadow-emerald-900/40 active:scale-95 flex items-center gap-4">
             <span class="text-3xl">+</span>
             立即新增區段
@@ -1838,53 +1894,58 @@ const formatRelativeTime = (date: Date) => {
         >
           <template #item="{ element: section }">
             <div class="flex-shrink-0 w-[80vw] sm:w-[260px] md:w-[280px] flex flex-col max-h-full bg-slate-900/60 backdrop-blur-xl rounded-[2rem] border border-white/5 overflow-hidden shadow-lg transition-transform duration-300 hover:border-white/10 will-change-transform">
-              <!-- Section Header (Editable) -->
-              <div class="p-5 border-b border-white/10 flex justify-between items-center section-drag-handle cursor-move group/shead"
+              <!-- Section Header (Padlet Style) -->
+              <div class="relative group/shead flex flex-col p-4 pb-0"
                    :style="{ borderTopColor: section.color, borderTopWidth: '4px' }">
                 
-                <input v-if="editingSectionId === section.id"
-                       :id="`edit-section-${section.id}`"
-                       v-model="editTitle"
-                       @blur="saveEditSection(section)"
-                       @keydown.enter="saveEditSection(section)"
-                       class="bg-transparent border-b border-white text-lg font-bold text-white w-full outline-none"
-                />
-                <h2 v-else @dblclick="startEditSection(section)" 
-                    class="font-bold text-white text-lg cursor-pointer hover:bg-white/10 rounded px-1 transition-colors flex-1">
-                    {{ section.title }}
-                </h2>
-                <div class="flex items-center gap-1 relative">
-                    <span class="text-xs text-gray-400 mr-2">{{ (localPostsBySection[section.id] || []).length }} 則</span>
-                    
-                    <button v-if="canContribute" @click="activeSection = section.id" 
-                            class="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-emerald-500/20 text-emerald-400/70 hover:text-emerald-400 transition-all active:scale-90 group/additem"
-                            title="新增貼文">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="group-hover/additem:rotate-90 transition-transform"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
-                    </button>
-                    
+                <div class="flex justify-between items-start gap-2 mb-2">
+                  <input v-if="editingSectionId === section.id"
+                         :id="`edit-section-${section.id}`"
+                         v-model="editTitle"
+                         @blur="saveEditSection(section)"
+                         @keydown.enter="saveEditSection(section)"
+                         class="bg-transparent border-b border-white text-lg font-bold text-white w-full outline-none"
+                  />
+                  <h2 v-else @dblclick="startEditSection(section)" 
+                      class="font-bold text-white text-lg cursor-pointer hover:bg-white/5 rounded-lg px-2 py-1 transition-colors flex-1 break-words leading-snug tracking-tight"
+                      :title="section.title">
+                      {{ section.title }}
+                  </h2>
+                  
+                  <div class="flex items-center">
                     <button @click.stop="toggleSectionMenu(section.id)"
-                            class="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-white/10 text-white/70 hover:text-white transition-all active:scale-90">
+                            class="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-white/10 text-white/70 hover:text-white transition-all active:scale-90 flex-shrink-0">
                       <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
                     </button>
-                    
-                    <!-- Section Menu Dropdown -->
-                    <div v-if="activeSectionMenuId === section.id" 
-                         class="absolute right-0 top-10 w-48 bg-gray-900 rounded-xl shadow-2xl border border-white/10 z-50 overflow-hidden animate-scale-in origin-top-right">
-                        <button @click="activeSection = section.id; closeSectionMenu()" class="w-full text-left px-4 py-3 text-xs font-bold text-gray-300 hover:bg-emerald-500/10 hover:text-emerald-400 flex items-center gap-3 transition-all group/menuitem">
-                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="group-hover/menuitem:rotate-90 transition-transform"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
-                          新增貼文
-                        </button>
-                        <div class="h-px bg-white/5 mx-2"></div>
-                        <button v-if="canEdit" @click="startEditSection(section); closeSectionMenu()" class="w-full text-left px-4 py-3 text-xs font-bold text-gray-300 hover:bg-white/5 hover:text-white flex items-center gap-3 transition-all group/menuitem">
-                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="group-hover/menuitem:rotate-12 transition-transform"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
-                          重新命名
-                        </button>
-                        <button v-if="canEdit" @click="handleDeleteSection(section.id); closeSectionMenu()" class="w-full text-left px-4 py-3 text-xs font-bold text-red-400 hover:bg-red-500/10 hover:text-red-300 flex items-center gap-3 transition-all group/menuitem border-t border-white/5">
-                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="group-hover/menuitem:-rotate-12 transition-transform"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
-                          刪除區段
-                        </button>
-                    </div>
+                  </div>
                 </div>
+
+                <!-- Section Menu Dropdown -->
+                <div v-if="activeSectionMenuId === section.id" 
+                     class="absolute right-4 top-14 w-48 bg-gray-900 rounded-xl shadow-2xl border border-white/10 z-50 overflow-hidden animate-scale-in origin-top-right">
+                    <button @click="activeSection = section.id; closeSectionMenu()" class="w-full text-left px-4 py-3 text-xs font-bold text-gray-300 hover:bg-emerald-500/10 hover:text-emerald-400 flex items-center gap-3 transition-all group/menuitem">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="group-hover/menuitem:rotate-90 transition-transform"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+                      新增貼文
+                    </button>
+                    <div class="h-px bg-white/5 mx-2"></div>
+                    <button v-if="canEdit" @click="startEditSection(section); closeSectionMenu()" class="w-full text-left px-4 py-3 text-xs font-bold text-gray-300 hover:bg-white/5 hover:text-white flex items-center gap-3 transition-all group/menuitem">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="group-hover/menuitem:rotate-12 transition-transform"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
+                      重新命名
+                    </button>
+                    <button v-if="canEdit" @click="handleDeleteSection(section.id); closeSectionMenu()" class="w-full text-left px-4 py-3 text-xs font-bold text-red-400 hover:bg-red-500/10 hover:text-red-300 flex items-center gap-3 transition-all group/menuitem border-t border-white/5">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="group-hover/menuitem:-rotate-12 transition-transform"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+                      刪除區段
+                    </button>
+                </div>
+
+                <!-- Inline Add Bar (Compressed) -->
+                <button v-if="canContribute" @click="activeSection = section.id" 
+                        class="mt-2 w-full h-9 flex items-center justify-center rounded-xl bg-white/5 hover:bg-white/10 text-white/20 hover:text-white/60 border border-white/5 transition-all active:scale-[0.98] group/addbar"
+                        title="在此區段新增貼文">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="group-hover/addbar:scale-110 transition-transform opacity-30 group-hover:opacity-100"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+                </button>
+                
+                <!-- Posts count removed as per request -->
               </div>
 
               <!-- Posts Container -->
@@ -1956,8 +2017,9 @@ const formatRelativeTime = (date: Date) => {
                       <button @click="fileInput?.click()" :disabled="cloudinaryUploading" class="p-2 hover:bg-gray-100 rounded-lg text-gray-500 disabled:opacity-50 transition-colors flex items-center gap-1" title="上傳圖片或檔案">
                         <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.51a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
                       </button>
-                      <button @click="addYouTubeLink" class="p-2 hover:bg-gray-100 rounded-lg text-gray-500 transition-colors" title="加入YouTube連結">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/></svg>
+                      <input ref="cameraInput" type="file" accept="image/*" capture="environment" class="hidden" @change="handleFileSelect">
+                      <button @click="cameraInput?.click()" class="p-2 hover:bg-gray-100 rounded-lg text-gray-500 transition-colors" title="拍照上傳">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
                       </button>
                       <button @click="isPoll = !isPoll" 
                               class="p-2 rounded-lg transition-all border"
@@ -2154,8 +2216,9 @@ const formatRelativeTime = (date: Date) => {
                                  <button @click.stop="fileInput?.click()" :disabled="cloudinaryUploading" class="p-1.5 hover:bg-gray-100 rounded-lg text-gray-500 transition-colors" title="上傳附件">
                                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.51a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
                                  </button>
-                                 <button @click.stop="addYouTubeLink" class="p-1.5 hover:bg-gray-100 rounded-lg text-gray-500 transition-colors" title="加入YouTube連結">
-                                   <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/></svg>
+                                 <input ref="cameraInput" type="file" accept="image/*" capture="environment" class="hidden" @change="handleFileSelect">
+                                 <button @click.stop="cameraInput?.click()" class="p-1.5 hover:bg-gray-100 rounded-lg text-gray-500 transition-colors" title="拍照上傳">
+                                   <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
                                  </button>
                               </div>
                               <div class="flex gap-2">
@@ -2351,10 +2414,24 @@ const formatRelativeTime = (date: Date) => {
             </template>
           </draggable>
 
-        <!-- Add Section Button (Minimalist Icon) -->
-        <div v-if="isOwner" class="flex-shrink-0 w-16 h-full flex flex-col justify-start pt-12">
-            <button @click="createSection" 
-                    class="w-12 h-12 text-white/20 hover:text-white/80 rounded-full flex items-center justify-center transition-all duration-300 active:scale-90"
+        <!-- Add Section Button (Padlet-style Inline) -->
+        <div v-if="isOwner" class="flex-shrink-0 w-80 h-full flex flex-col justify-start pt-10">
+            <div v-if="isAddingSection" class="bg-white/10 backdrop-blur-md rounded-[2.5rem] p-6 border border-emerald-500/50 shadow-2xl animate-scale-in">
+                <input ref="newSectionInput"
+                       v-model="newSectionName" 
+                       @keydown.enter="confirmCreateSection"
+                       @keydown.esc="cancelAddingSection"
+                       @blur="confirmCreateSection"
+                       placeholder="輸入欄位名稱..." 
+                       class="w-full bg-white/10 text-white font-bold px-4 py-3 rounded-xl outline-none border border-white/10 focus:border-emerald-500 transition-all placeholder-white/30"
+                       autofocus />
+                <div class="flex justify-end gap-2 mt-4">
+                  <button @click="cancelAddingSection" class="px-4 py-2 text-xs text-gray-400 hover:text-white font-bold transition-colors">取消</button>
+                  <button @click="confirmCreateSection" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs rounded-xl font-bold shadow-lg transition-all">建立</button>
+                </div>
+            </div>
+            <button v-else @click="createSection" 
+                    class="w-14 h-14 text-white/20 hover:text-white/80 rounded-full flex items-center justify-center transition-all duration-300 active:scale-90 bg-white/5 border border-white/5 hover:border-white/20 hover:bg-white/10"
                     title="新增區段">
               <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             </button>
@@ -2392,7 +2469,8 @@ const formatRelativeTime = (date: Date) => {
                        class="px-4 py-2 bg-white/10 backdrop-blur-md rounded-xl text-white font-bold text-lg border border-emerald-500 outline-none w-64"
                 />
                 <h2 v-else @dblclick="startEditSection(section)"
-                    class="px-4 py-2 bg-black/60 rounded-xl text-white font-bold text-lg border border-white/10 shadow-sm cursor-pointer hover:bg-black/80 transition-colors">
+                    class="px-4 py-2 bg-black/60 rounded-xl text-white font-bold text-lg border border-white/10 shadow-sm cursor-pointer hover:bg-black/80 transition-colors max-w-xl line-clamp-2 break-words"
+                    :title="section.title">
                   {{ section.title }}
                 </h2>
                 <div class="flex items-center gap-1 relative">
@@ -2424,103 +2502,108 @@ const formatRelativeTime = (date: Date) => {
                 </div>
               </div>
 
-            <!-- Posts Container -->
-            <div>
-              
-              <!-- Inline Post Form -->
-              <div v-if="activeSection === section.id" class="mb-4 max-w-lg">
-                <div class="bg-white rounded-xl p-4 shadow-xl animate-scale-in">
+              <!-- Content Layout: Form + Posts -->
+              <div class="flex flex-col md:flex-row gap-6 items-start">
                   
-                   <!-- Color Picker -->
-                   <div class="flex gap-2 mb-2 overflow-x-auto pb-2 scrollbar-hide">
-                      <button v-for="color in POST_COLORS" :key="color.value"
-                              @mousedown.prevent="newPostColor = color.value"
-                              @click.stop
-                              class="w-5 h-5 rounded-full border border-gray-200 transition-transform hover:scale-110 flex-shrink-0"
-                              :class="{ 'ring-2 ring-emerald-500 ring-offset-1': newPostColor === color.value }"
-                              :style="{ backgroundColor: color.value }"
-                              :title="color.name">
-                      </button>
-                   </div>
+                <!-- Inline Post Form (Side Panel) -->
+                <div v-if="activeSection === section.id" class="w-full md:w-80 flex-shrink-0 bg-white rounded-[2rem] p-5 shadow-2xl border border-white/20 animate-slide-in-left sticky top-24 z-30">
+                     <div class="flex justify-between items-center mb-4">
+                        <h3 class="font-bold text-gray-700">新增貼文</h3>
+                        <button @click.stop="activeSection = null" class="text-gray-400 hover:text-gray-600">
+                           <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        </button>
+                     </div>
 
-                  <input v-model="newPostTitle" 
-                         type="text" 
-                         :placeholder="isPoll ? '投票問題...' : '貼文標題 (選填)...'" 
-                         class="w-full text-sm font-bold text-gray-800 placeholder-gray-400 bg-transparent outline-none mb-2 px-1"
-                         @keydown.enter.prevent="nextTick(() => contentRefs[section.id]?.focus())">
-                         
+                     <!-- Color Picker -->
+                     <div class="flex gap-2 mb-3 overflow-x-auto pb-2 scrollbar-hide">
+                        <button v-for="color in POST_COLORS" :key="color.value"
+                                @mousedown.prevent="newPostColor = color.value"
+                                @click.stop
+                                class="w-6 h-6 rounded-full border border-gray-200 transition-transform hover:scale-110 flex-shrink-0"
+                                :class="{ 'ring-2 ring-emerald-500 ring-offset-1': newPostColor === color.value }"
+                                :style="{ backgroundColor: color.value }"
+                                :title="color.name">
+                        </button>
+                     </div>
 
+                     <input v-model="newPostTitle" 
+                            type="text" 
+                            :placeholder="isPoll ? '投票問題...' : '貼文標題...'" 
+                            class="w-full text-sm font-bold text-gray-800 placeholder-gray-400 bg-transparent outline-none mb-3 px-1 border-b border-transparent focus:border-emerald-500 transition-colors"
+                            @keydown.enter.prevent="nextTick(() => contentRefs[section.id]?.focus())">
+                           
+                     <!-- Poll Options Input -->
+                     <div v-if="isPoll" class="space-y-2 mb-3 bg-slate-50 p-2 rounded-lg border border-slate-100">
+                        <div v-for="(option, idx) in pollOptions" :key="option.id" class="flex items-center gap-2">
+                            <span class="text-xs font-bold text-slate-400 w-4 flex-shrink-0 text-center">{{ idx + 1 }}.</span>
+                            <input v-model="option.text" type="text" :placeholder="`選項 ${idx + 1}`" class="flex-1 w-full min-w-0 bg-white border border-slate-200 rounded px-2 py-1 text-xs text-slate-900 focus:outline-none focus:border-emerald-400 transition-colors" />
+                            <button @click.stop="removePollOption(idx)" class="text-slate-300 hover:text-red-400 p-1" :disabled="pollOptions.length <= 2">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                            </button>
+                        </div>
+                        <button @click.stop="addPollOption" class="w-full py-1.5 border border-dashed border-slate-300 rounded text-slate-400 text-xs font-bold hover:bg-white hover:text-emerald-500 hover:border-emerald-300 transition-all flex items-center justify-center gap-1">
+                            + 新增選項
+                        </button>
+                     </div>
 
-                   <!-- Poll Options Input -->
-                   <div v-if="isPoll" class="space-y-2 mb-3 bg-slate-50 p-2 rounded-lg border border-slate-100 mx-1">
-                      <div v-for="(option, idx) in pollOptions" :key="option.id" class="flex items-center gap-2">
-                          <span class="text-xs font-bold text-slate-400 w-4 flex-shrink-0 text-center">{{ idx + 1 }}.</span>
-                          <input v-model="option.text" type="text" :placeholder="`選項 ${idx + 1}`" class="flex-1 w-full min-w-0 bg-white border border-slate-200 rounded px-2 py-1 text-xs text-slate-900 focus:outline-none focus:border-emerald-400 transition-colors" />
-                          <button @click.stop="removePollOption(idx)" class="text-slate-300 hover:text-red-400 p-1" :disabled="pollOptions.length <= 2">
-                              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                          </button>
+                    <textarea v-model="newPostContent" 
+                              :ref="(el) => { if(el) contentRefs[section.id] = el as HTMLTextAreaElement }"
+                              :style="{ backgroundColor: newPostColor !== '#ffffff' ? newPostColor : '#ffffff' }"
+                              placeholder="輸入內容..." 
+                              class="w-full bg-gray-50 rounded-xl p-3 text-sm outline-none focus:bg-white border border-gray-200 focus:border-emerald-500 transition-colors resize-none h-32 mb-2"
+                              autofocus></textarea>
+                    
+                    <div v-if="pendingAttachments.length" class="flex gap-2 mb-3 flex-wrap">
+                      <div v-for="(att, idx) in pendingAttachments" :key="idx" 
+                           class="relative w-12 h-12 rounded-lg overflow-hidden bg-gray-100 border border-gray-200">
+                        <img v-if="att.thumbnailUrl" :src="att.thumbnailUrl" class="w-full h-full object-cover">
+                        <span v-else class="absolute inset-0 flex items-center justify-center text-lg">
+                          {{ att.type === 'pdf' ? '📄' : '🎬' }}
+                        </span>
+                        <button @click.stop="pendingAttachments.splice(idx, 1)" 
+                                class="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white rounded-full text-[10px] flex items-center justify-center">×</button>
                       </div>
-                      <button @click.stop="addPollOption" class="w-full py-1.5 border border-dashed border-slate-300 rounded text-slate-400 text-xs font-bold hover:bg-white hover:text-emerald-500 hover:border-emerald-300 transition-all flex items-center justify-center gap-1">
-                          + 新增選項
-                      </button>
-                   </div>
+                    </div>
 
-                  <textarea v-model="newPostContent" 
-                            :ref="(el) => { if(el) contentRefs[section.id] = el as HTMLTextAreaElement }"
-                            :style="{ backgroundColor: newPostColor !== '#ffffff' ? newPostColor : '#ffffff' }"
-                            placeholder="輸入你的想法，或拖放檔案至此處..." 
-                            class="w-full bg-gray-50 rounded-lg p-3 text-sm outline-none focus:bg-white border border-gray-200 focus:border-emerald-500 transition-colors resize-none h-24"
-                            autofocus></textarea>
-                   <p class="text-[10px] text-gray-400 mt-1 italic text-center">💡 提示：將檔案直接拖入視窗任何地方也能上傳喔！</p>
-                  
-                  <div v-if="pendingAttachments.length" class="flex gap-2 mt-2 flex-wrap">
-                    <div v-for="(att, idx) in pendingAttachments" :key="idx" 
-                         class="relative w-16 h-16 rounded-lg overflow-hidden bg-gray-100">
-                      <img v-if="att.thumbnailUrl" :src="att.thumbnailUrl" class="w-full h-full object-cover">
-                      <span v-else class="absolute inset-0 flex items-center justify-center text-2xl">
-                        {{ att.type === 'pdf' ? '📄' : '🎬' }}
-                      </span>
-                      <button @click.stop="pendingAttachments.splice(idx, 1)" 
-                              class="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center">×</button>
-                    </div>
-                  </div>
-
-                  <div class="flex justify-between items-center mt-3">
-                    <div class="flex gap-2">
-                       <input ref="fileInput" type="file" accept="image/*,application/pdf,video/*" class="hidden" @change="handleFileSelect">
-                      <button @click.stop="fileInput?.click()" :disabled="cloudinaryUploading" class="p-2 hover:bg-gray-100 rounded-lg text-gray-500 flex items-center gap-1" title="上傳附件">
-                        <span class="text-xl">📎</span>
-                      </button>
-                      <button @click.stop="isPoll = !isPoll" 
-                              class="p-2 rounded-lg transition-all border"
-                              :class="isPoll ? 'bg-emerald-100 text-emerald-700 border-emerald-200 shadow-sm' : 'hover:bg-gray-100 text-gray-500 border-transparent'"
-                              title="發起投票">
-                          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="8" x2="16" y2="8"/></svg>
+                    <div class="flex justify-between items-center">
+                      <div class="flex gap-1">
+                        <input ref="fileInput" type="file" accept="image/*,application/pdf,video/*" class="hidden" @change="handleFileSelect">
+                        <button @click.stop="fileInput?.click()" :disabled="cloudinaryUploading" class="p-2 hover:bg-gray-100 rounded-lg text-gray-500 flex items-center gap-1 transition-colors" title="上傳附件">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.51a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                        </button>
+                        <input ref="cameraInput" type="file" accept="image/*" capture="environment" class="hidden" @change="handleFileSelect">
+                        <button @click.stop="cameraInput?.click()" class="p-2 hover:bg-gray-100 rounded-lg text-gray-500 transition-colors" title="拍照上傳">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                        </button>
+                        <button @click.stop="isPoll = !isPoll" 
+                                class="p-2 rounded-lg transition-all border"
+                                :class="isPoll ? 'bg-emerald-100 text-emerald-700 border-emerald-200 shadow-sm' : 'hover:bg-gray-100 text-gray-500 border-transparent'"
+                                title="發起投票">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="8" x2="16" y2="8"/></svg>
+                        </button>
+                      </div>
+                      <button @click.stop="submitPost(section.id)" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs rounded-lg font-bold shadow-md transition-all active:scale-95">
+                        發佈貼文
                       </button>
                     </div>
-                    <div class="flex gap-2">
-                      <button @click.stop="activeSection = null; pendingAttachments = []" class="px-4 py-2 text-sm text-gray-500 hover:text-gray-700">取消</button>
-                      <button @click.stop="submitPost(section.id)" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded-lg font-bold shadow-md">發佈</button>
-                    </div>
-                  </div>
                 </div>
-              </div>
 
-              <!-- Posts Grid (Draggable) -->
-              <draggable
-                v-model="localPostsBySection[section.id]"
-                group="posts"
-                item-key="id"
-                class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8 min-h-[50px] items-start mb-12"
-                :disabled="currentSort !== 'manual' || !isOwner"
-                @change="(evt: any) => {
-                  if (evt.added || evt.moved) {
-                     boardStore.reorderPosts(boardId, section.id, (localPostsBySection[section.id] || []).map(p => p.id));
-                  }
-                }"
-              >
-                <template #item="{ element: post }">
-                  <div class="bg-white/98 rounded-[2.5rem] p-6 shadow-2xl border border-white/20 transition-all duration-500 group relative hover:-translate-y-2 hover:shadow-[0_32px_64px_-16px_rgba(0,0,0,0.3)] cursor-pointer will-change-transform"
+                <!-- Posts Grid (Draggable) -->
+                <div class="flex-1 min-w-0">
+                  <draggable
+                    v-model="localPostsBySection[section.id]"
+                    group="posts"
+                    item-key="id"
+                    class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 min-h-[100px] mb-12"
+                    :disabled="currentSort !== 'manual' || !isOwner"
+                    @change="(evt: any) => {
+                      if (evt.added || evt.moved) {
+                         boardStore.reorderPosts(boardId, section.id, (localPostsBySection[section.id] || []).map(p => p.id));
+                      }
+                    }"
+                  >
+                 <template #item="{ element: post }">
+                   <div class="bg-white/98 rounded-[2.5rem] p-6 shadow-2xl border border-white/20 transition-all duration-500 group relative hover:-translate-y-2 hover:shadow-[0_32px_64px_-16px_rgba(0,0,0,0.3)] cursor-pointer will-change-transform"
                  style="content-visibility: auto; contain-intrinsic-size: 100px 400px;"
                  :class="{ 'ring-4 ring-emerald-500 ring-inset': dragTargetPostId === post.id }"
                  :style="{ backgroundColor: post.color || '#ffffff' }"
@@ -2655,6 +2738,10 @@ const formatRelativeTime = (date: Date) => {
                           <button @click.stop="fileInput?.click()" class="w-8 h-8 bg-gray-100 hover:bg-emerald-500 text-gray-400 hover:text-white rounded-lg flex items-center justify-center transition-all active:scale-95 group/upload" title="上傳附件">
                       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.51a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
                     </button>
+                          <input ref="cameraInput" type="file" accept="image/*" capture="environment" class="hidden" @change="handleFileSelect">
+                          <button @click.stop="cameraInput?.click()" class="w-8 h-8 bg-gray-100 hover:bg-emerald-500 text-gray-400 hover:text-white rounded-lg flex items-center justify-center transition-all active:scale-95 group/upload" title="拍照上傳">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                          </button>
                        </div>
                        <div class="flex gap-2">
                          <button @click.stop="cancelEditPost" class="px-2 py-1 text-xs text-gray-500 hover:text-gray-700 font-bold border border-gray-200 rounded">取消</button>
@@ -2806,11 +2893,27 @@ const formatRelativeTime = (date: Date) => {
               </draggable>
             </div>
           </div>
+        </div>
         </template>
       </draggable>
 
         <div v-if="isOwner" class="max-w-6xl mx-auto mt-16 pb-32">
-          <button @click="createSection" 
+          <div v-if="isAddingSection" class="max-w-lg mx-auto bg-white/10 backdrop-blur-md rounded-[2.5rem] p-8 border border-emerald-500/50 shadow-2xl animate-scale-in">
+               <h3 class="text-white font-black text-sm uppercase tracking-widest mb-4 opacity-50">建立新區段</h3>
+               <input ref="newSectionInput"
+                      v-model="newSectionName" 
+                      @keydown.enter="confirmCreateSection"
+                      @keydown.esc="cancelAddingSection"
+                      @blur="confirmCreateSection"
+                      placeholder="輸入欄位名稱..." 
+                      class="w-full bg-white/10 text-white font-bold px-6 py-4 rounded-2xl outline-none border border-white/10 focus:border-emerald-500 transition-all placeholder-white/30 text-lg"
+                      autofocus />
+               <div class="flex justify-end gap-3 mt-6">
+                 <button @click="cancelAddingSection" class="px-6 py-2.5 text-sm text-gray-400 hover:text-white font-bold transition-colors">取消</button>
+                 <button @click="confirmCreateSection" class="px-8 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded-xl font-bold shadow-lg transition-all">建立區段</button>
+               </div>
+          </div>
+          <button v-else @click="createSection" 
                   class="w-full h-20 border-2 border-dashed border-white/5 bg-white/5 hover:bg-white/10 rounded-3xl flex items-center justify-center gap-4 text-white/20 hover:text-emerald-400 hover:border-emerald-500/30 hover:scale-[1.01] active:scale-[0.99] transition-all duration-500 text-sm font-black uppercase tracking-[0.2em] group shadow-xl">
             <div class="w-10 h-10 rounded-2xl bg-white/5 border border-white/5 flex items-center justify-center group-hover:bg-emerald-500/10 group-hover:rotate-90 transition-all duration-700 shadow-inner">
               <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="text-white/20 group-hover:text-emerald-400 transition-colors"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
@@ -2893,6 +2996,10 @@ const formatRelativeTime = (date: Date) => {
                 <input ref="fileInput" type="file" accept="image/*,application/pdf,video/*" class="hidden" @change="handleFileSelect">
                 <button @click.stop="fileInput?.click()" class="w-12 h-12 bg-white/5 hover:bg-white/10 rounded-xl flex items-center justify-center text-white transition-all border border-white/5 active:scale-95 group/upload" title="上傳檔案">
                   <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="group-hover:rotate-12 transition-transform"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.51a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                </button>
+                <input ref="cameraInput" type="file" accept="image/*" capture="environment" class="hidden" @change="handleFileSelect">
+                <button @click.stop="cameraInput?.click()" class="w-12 h-12 bg-white/5 hover:bg-white/10 rounded-xl flex items-center justify-center text-white transition-all border border-white/5 active:scale-95 group/upload" title="拍照上傳">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
                 </button>
                 <button @click.stop="isPoll = !isPoll" 
                       class="w-12 h-12 rounded-xl flex items-center justify-center transition-all border active:scale-95"
@@ -3064,7 +3171,15 @@ const formatRelativeTime = (date: Date) => {
                      </div>
                   </div>
                   <div class="flex justify-between items-center mt-1">
-                     <button @click.stop="fileInput?.click()" class="p-1 hover:bg-gray-100 rounded transition-colors text-lg" title="上傳附件">📎</button>
+                     <div class="flex gap-1">
+                        <button @click.stop="fileInput?.click()" class="p-1 hover:bg-gray-100 rounded transition-colors text-gray-500" title="上傳附件">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.51a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                        </button>
+                        <input ref="cameraInput" type="file" accept="image/*" capture="environment" class="hidden" @change="handleFileSelect">
+                        <button @click.stop="cameraInput?.click()" class="p-1 hover:bg-gray-100 rounded transition-colors text-gray-500" title="拍照上傳">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                        </button>
+                     </div>
                      <div class="flex gap-2">
                        <button @click.stop="cancelEditPost" class="px-2 py-1 text-xs text-gray-500 hover:text-gray-700 font-bold border border-gray-200 rounded">取消</button>
                        <button @click.stop="saveEditPost(post)" class="px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-xs rounded font-bold shadow-sm">儲存</button>
@@ -3281,12 +3396,43 @@ const formatRelativeTime = (date: Date) => {
                   <label class="block text-xs font-black text-emerald-400 uppercase tracking-widest mb-4">視覺背景</label>
                   
                   <div class="space-y-4">
-                    <div class="grid grid-cols-4 gap-3">
-                       <div v-for="(bg, idx) in presetBackgrounds" :key="idx" 
-                       @click="currentBoard!.backgroundImage = bg"
-                       :class="['aspect-video rounded-xl bg-cover bg-center cursor-pointer border-2 transition-all hover:scale-110 z-10', currentBoard?.backgroundImage === bg ? 'border-emerald-500 scale-105' : 'border-transparent hover:border-white/30']"
-                       :style="{ backgroundImage: `url(${bg})` }">
-                       </div>
+                    <!-- Unsplash Search -->
+                    <div class="mb-6 bg-white/5 p-4 rounded-2xl border border-white/5">
+                      <div class="flex flex-col gap-3">
+                         <div class="flex justify-between items-center px-1">
+                            <h4 class="text-[10px] font-black text-gray-500 uppercase tracking-widest leading-none">Unsplash 圖片庫</h4>
+                            <span class="text-[9px] text-gray-600">無需 API Key</span>
+                         </div>
+                        <div class="flex gap-2">
+                          <div class="relative flex-1">
+                            <input v-model="unsplashSearchQuery" 
+                                   @keydown.enter="searchUnsplash"
+                                   type="text" 
+                                   placeholder="搜尋背景 (例如: nature, office)..." 
+                                   class="w-full bg-slate-950/50 border border-white/5 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-emerald-500 transition-all placeholder-white/20">
+                            <div v-if="isSearchingUnsplash" class="absolute right-3 top-2.5">
+                              <svg class="animate-spin h-5 w-5 text-emerald-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                              </svg>
+                            </div>
+                          </div>
+                          <button @click="searchUnsplash" 
+                                  :disabled="isSearchingUnsplash"
+                                  class="px-5 py-2 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-500 hover:text-white rounded-xl text-xs font-black transition-all disabled:opacity-50 border border-emerald-500/30">
+                            搜尋
+                          </button>
+                        </div>
+                      </div>
+
+                      <!-- Search Results Grid -->
+                      <div v-if="unsplashResults.length" class="grid grid-cols-4 gap-3 mt-4 animate-fade-in max-h-48 overflow-y-auto pr-2 scrollbar-hide">
+                        <div v-for="(img, idx) in unsplashResults" :key="idx" 
+                             @click="selectUnsplashImage(img)"
+                             :class="['aspect-video rounded-xl bg-cover bg-center cursor-pointer border-2 transition-all hover:scale-105 z-10', currentBoard?.backgroundImage === img ? 'border-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.4)]' : 'border-transparent hover:border-white/30']"
+                             :style="{ backgroundImage: `url(${img})` }">
+                        </div>
+                      </div>
                     </div>
 
                     <div class="pt-4 border-t border-white/5">
@@ -3571,33 +3717,7 @@ const formatRelativeTime = (date: Date) => {
       </div>
     </div>
     <!-- Section Title Modal -->
-    <div v-if="showSectionPrompt" 
-         class="fixed inset-0 bg-slate-950/80 backdrop-blur-xl flex items-center justify-center z-[250] p-4 animate-fade-in"
-         @click.self="showSectionPrompt = false">
-      <div class="bg-slate-900 border border-white/10 rounded-[2.5rem] p-8 w-full max-w-sm shadow-2xl animate-scale-in">
-        <div class="w-16 h-16 bg-emerald-500/10 text-emerald-500 rounded-2xl flex items-center justify-center text-3xl mx-auto mb-6 border border-emerald-500/20">
-          <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M9 3v18"/></svg>
-        </div>
-        <h3 class="text-xl font-black text-white mb-2 text-center tracking-tight">新增區段</h3>
-        <p class="text-xs text-slate-400 text-center mb-8 font-medium">為您的看板建立一個新的分類分欄</p>
-        
-        <input v-model="newSectionName" 
-               type="text" 
-               placeholder="例如：待辦清單、靈感、已完成..." 
-               class="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-3.5 mb-8 focus:outline-none focus:border-emerald-500 focus:bg-white/10 transition-all font-black text-center"
-               @keydown.enter="confirmCreateSection"
-               autofocus>
-        
-        <div class="flex gap-3">
-           <button @click="showSectionPrompt = false" class="flex-1 py-3 text-slate-400 hover:text-white font-bold transition-colors">取消</button>
-           <button @click="confirmCreateSection" 
-                   :disabled="!newSectionName.trim()"
-                   class="flex-[2] py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl font-black disabled:opacity-50 transition-all shadow-xl shadow-emerald-900/40 active:scale-95">
-             建立區段
-           </button>
-        </div>
-      </div>
-    </div>
+    <!-- Section Prompt Modal Removed -->
 
     <!-- YouTube Link Modal -->
     <div v-if="showYouTubeInput" 
