@@ -9,973 +9,543 @@ import { useCloudinary } from '../composables/useCloudinary';
 import { useModal } from '../composables/useModal';
 import { doc, getDoc, updateDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import { useAppConfig, DB_PREFIX } from '../composables/useAppConfig';
 
+// Components
+import BoardHeader from '../components/BoardHeader.vue';
+import PostCard from '../components/PostCard.vue';
+import PostEditor from '../components/PostEditor.vue';
+
+// Composables
+import { usePostActions } from '../composables/usePostActions';
+import { useBoardSettings } from '../composables/useBoardSettings';
+import { useSlideshow } from '../composables/useSlideshow';
+
+// 1. Basic State & Refs
 const route = useRoute();
 const router = useRouter();
 const boardStore = useBoardStore();
 const authStore = useAuthStore();
-const { 
-  uploadFile, 
-  getVideoThumbnail, 
-  getViewUrl,
-  deleteFile,
-  isUploading: cloudinaryUploading,
-  uploadProgress
-} = useCloudinary();
-import { useAppConfig, DB_PREFIX } from '../composables/useAppConfig';
-const { config: appConfig, generateShareLink } = useAppConfig();
-const modal = useModal();
-
-const isCopyingConfig = ref(false);
-
-const previewUrl = ref<string | null>(null);
-const previewOriginalUrl = ref<string | null>(null);
-const previewType = ref<'image' | 'pdf' | null>(null);
-
-// --- 基礎狀態與計算屬性 ---
 const boardId = computed(() => route.params.id as string);
 const currentBoard = ref<Board | null>(null);
 const isLoading = ref(true);
 const isPasswordVerified = ref(false);
 const guestName = ref(sessionStorage.getItem('ahmo_guest_name') || '');
+const guestNameInput = ref('');
+const showGuestNameModal = ref(false);
+const pendingAction = ref<(() => void) | null>(null);
 
-const isOwner = computed(() => {
-  return currentBoard.value?.ownerId === authStore.user?.uid;
-});
-
-const canEdit = computed(() => {
-  return isOwner.value;
-});
-
+const isOwner = computed(() => currentBoard.value?.ownerId === authStore.user?.uid);
 const canContribute = computed(() => {
-  if (isOwner.value) return true;
-  if (!currentBoard.value) return false;
-  if (currentBoard.value.privacy === 'private') return false;
-  const guestPerm = currentBoard.value.guestPermission || 'edit';
-  return guestPerm !== 'view';
+    if (isOwner.value) return true;
+    if (!currentBoard.value) return false;
+    if (currentBoard.value.privacy === 'private') return false;
+    return (currentBoard.value.guestPermission || 'edit') !== 'view';
 });
 
-// --- 拖放與局部狀態 ---
-const dragTargetPostId = ref<string | null>(null);
-const dragTargetSectionId = ref<string | null>(null);
-const isDraggingOver = ref(false);
+// 2. Composables Instances
+const postActions = usePostActions(boardId.value);
+const boardSettings = useBoardSettings(boardId.value);
 
-// --- 投影片模式 ---
-const showSlideshow = ref(false);
-const currentSlideIndex = ref(0);
-const isPlaying = ref(false);
-let slideTimer: number | null = null;
+const { 
+  uploadFile, 
+  isUploading: cloudinaryUploading,
+  uploadProgress
+} = useCloudinary();
+const { config: appConfig } = useAppConfig();
+const modal = useModal();
 
-const slides = computed(() => {
-  const allSlides: { type: 'title' | 'section' | 'post', data: any }[] = [];
-  
-  // 1. Title Slide
-  if (currentBoard.value) {
-    allSlides.push({ type: 'title', data: currentBoard.value });
-  }
-
-  // 2. Sections and Posts
-  localSections.value.forEach(section => {
-    // Add Section Divider
-    allSlides.push({ type: 'section', data: section });
-    
-    // Add Posts in this section
-    const posts = filteredAndSortedPostsBySection.value[section.id] || [];
-    posts.forEach(post => {
-      allSlides.push({ type: 'post', data: post });
-    });
-  });
-
-  return allSlides;
-});
-
-const currentSlide = computed(() => {
-  return slides.value[currentSlideIndex.value] || null;
-});
-
-const startSlideshow = () => {
-  showSlideshow.value = true;
-  currentSlideIndex.value = 0;
-  isPlaying.value = false; // Default to manual play
-  // startSlideTimer(); // Disable auto-play by default
-  document.body.style.overflow = 'hidden'; // Prevent background scrolling
-  
-  // Auto enter fullscreen for immersive experience
-  document.documentElement.requestFullscreen().catch(() => {});
-};
-
-const closeSlideshow = () => {
-  showSlideshow.value = false;
-  isPlaying.value = false;
-  stopSlideTimer();
-  document.body.style.overflow = '';
-  if (document.fullscreenElement) {
-    document.exitFullscreen().catch(err => console.log(err));
-  }
-};
-
-const toggleFullscreen = () => {
-  if (!document.fullscreenElement) {
-    document.documentElement.requestFullscreen().catch(err => {
-      console.log(`Error attempting to enable fullscreen: ${err.message}`);
-    });
-  } else {
-    document.exitFullscreen();
-  }
-};
-
-const nextSlide = () => {
-  if (currentSlideIndex.value < slides.value.length - 1) {
-    currentSlideIndex.value++;
-  } else {
-    // Loop back to start or stop? Let's loop.
-    currentSlideIndex.value = 0;
-  }
-};
-
-const prevSlide = () => {
-  if (currentSlideIndex.value > 0) {
-    currentSlideIndex.value--;
-  } else {
-    currentSlideIndex.value = slides.value.length - 1;
-  }
-};
-
-const togglePlayPause = () => {
-  isPlaying.value = !isPlaying.value;
-  if (isPlaying.value) {
-    startSlideTimer();
-  } else {
-    stopSlideTimer();
-  }
-};
-
-const startSlideTimer = () => {
-  stopSlideTimer();
-  slideTimer = window.setInterval(() => {
-    nextSlide();
-  }, 5000); // 5 seconds per slide
-};
-
-const stopSlideTimer = () => {
-  if (slideTimer) {
-    clearInterval(slideTimer);
-    slideTimer = null;
-  }
-};
-
-// Keyboard Navigation for Slideshow
-const handleKeydown = (e: KeyboardEvent) => {
-  if (!showSlideshow.value) return;
-  
-  switch(e.key) {
-    case 'ArrowRight':
-    case 'Space':
-      if (e.key === 'Space') e.preventDefault();
-      nextSlide();
-      // Reset timer on manual navigation
-      if (isPlaying.value) startSlideTimer(); 
-      break;
-    case 'ArrowLeft':
-      prevSlide();
-      if (isPlaying.value) startSlideTimer();
-      break;
-    case 'Escape':
-      closeSlideshow();
-      break;
-  }
-};
-
-// --- 投影片 URL ---
-const currentUrl = ref('');
-
-onMounted(() => {
-  currentUrl.value = window.location.href;
-  window.addEventListener('keydown', handleKeydown);
-});
-
-onUnmounted(() => {
-  window.removeEventListener('keydown', handleKeydown);
-  stopSlideTimer();
-});
-
-// 使用 computed 取代 ref + watch，顯著提升效能與減少不必要的重新渲染
-const localSections = computed(() => {
-  return [...boardStore.sections].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-});
-
-// --- 監聽器 ---
-
-// Sort Options
-const currentSort = ref('manual');
-const sortOptions = [
-    { label: '自訂排序', value: 'manual' },
-    { label: '時間 (新→舊)', value: 'time_desc' },
-    { label: '時間 (舊→新)', value: 'time_asc' },
-    { label: '標題 (A→Z)', value: 'title_asc' },
-    { label: '標題 (Z→A)', value: 'title_desc' },
-    { label: '作者 (A→Z)', value: 'author_asc' },
-    { label: '作者 (Z→A)', value: 'author_desc' },
+// 3. UI Helper States
+const POST_COLORS = [
+    { name: '預設', value: '#ffffff' },
+    { name: '灰藍', value: '#d1dce5' },
+    { name: '藕粉', value: '#e2d1d1' },
+    { name: '萌綠', value: '#d5e0d5' },
+    { name: '米黃', value: '#eee8d5' },
+    { name: '灰紫', value: '#ddd5e2' },
+    { name: '陶土', value: '#e5dcd1' },
+    { name: '海霧', value: '#d1e5e2' },
+    { name: '煙燻', value: '#e5e5e5' },
 ];
 
-// Load sort when boardId changes or currentBoard updates
-watch(() => currentBoard.value?.defaultSort, (newDefault) => {
-    if (newDefault) {
-        currentSort.value = newDefault;
-    }
-}, { immediate: true });
+const currentSort = ref('manual');
+const sortOptions = [
+  { label: '自訂排序', value: 'manual' },
+  { label: '時間 (新→舊)', value: 'newest' },
+  { label: '時間 (舊→新)', value: 'oldest' },
+  { label: '標題 (A→Z)', value: 'title-asc' },
+  { label: '標題 (Z→A)', value: 'title-desc' },
+  { label: '作者 (A→Z)', value: 'author-asc' },
+  { label: '作者 (Z→A)', value: 'author-desc' }
+];
 
-// Save sort when currentSort changes (Owner only)
-watch(currentSort, async (newSort) => {
-    if (isOwner.value && boardId.value && currentBoard.value && currentBoard.value.defaultSort !== newSort) {
-        try {
-            await updateDoc(doc(db, `${DB_PREFIX}boards`, boardId.value), { defaultSort: newSort });
-        } catch (e) {
-            console.error('Failed to sync sort:', e);
-        }
-    }
-});
-
-// 移除重複的監聽器
-
-
-// Sort Logic Helper
-const sortPosts = (posts: Post[], sortType: string) => {
-    return [...posts].sort((a, b) => {
-        switch (sortType) {
-            case 'time_desc':
-                return (b.createdAt?.getTime ? b.createdAt.getTime() : 0) - (a.createdAt?.getTime ? a.createdAt.getTime() : 0);
-            case 'time_asc':
-                return (a.createdAt?.getTime ? a.createdAt.getTime() : 0) - (b.createdAt?.getTime ? b.createdAt.getTime() : 0);
-            case 'title_asc':
-                return (a.title || '').localeCompare(b.title || '');
-            case 'title_desc':
-                return (b.title || '').localeCompare(a.title || '');
-            case 'author_asc':
-                return (a.author.displayName || '').localeCompare(b.author.displayName || '');
-            case 'author_desc':
-                return (b.author.displayName || '').localeCompare(a.author.displayName || '');
-            case 'manual':
-            default:
-                // If manual, maintain original order (already sorted by order in store)
-                // But we should ensure we respect the order field just in case
-                return (a.order ?? 0) - (b.order ?? 0);
-        }
-    });
-};
-
-
-// 使用 computed 優化貼文過濾與排序邏輯
-const filteredAndSortedPostsBySection = computed(() => {
-  const postsBySec = boardStore.postsBySection;
-  const owner = isOwner.value;
-  const modEnabled = currentBoard.value?.moderationEnabled;
-  const userId = authStore.user?.uid;
-  const sort = currentSort.value;
-  
-  const newMap: Record<string, Post[]> = {};
-  
-  Object.keys(postsBySec).forEach(key => {
-    let list = [...(postsBySec[key] || [])];
-    
-    // 1. 過濾邏輯 (待審核貼文處理)
-    if (modEnabled && !owner) {
-      list = list.filter(p => {
-        const isMine = (userId && p.author.uid === userId) || 
-                       (!userId && p.author.displayName === guestName.value && !!guestName.value);
-        const isBoardOwnerPost = p.author.uid === currentBoard.value?.ownerId;
-        return p.status === 'approved' || !p.status || isMine || isBoardOwnerPost;
-      });
-    }
-
-    // 2. 排序邏輯
-    newMap[key] = sortPosts(list, sort);
-  });
-  
-  return newMap;
-});
-
-const filteredAndSortedWallPosts = computed(() => {
-  const allPosts = boardStore.posts;
-  const owner = isOwner.value;
-  const modEnabled = currentBoard.value?.moderationEnabled;
-  const userId = authStore.user?.uid;
-  const sort = currentSort.value;
-  
-  let list = [...(allPosts || [])];
-  
-  if (modEnabled && !owner) {
-    list = list.filter(p => {
-      const isMine = (userId && p.author.uid === userId) || 
-                     (!userId && p.author.displayName === guestName.value && !!guestName.value);
-      const isBoardOwnerPost = p.author.uid === currentBoard.value?.ownerId;
-      return p.status === 'approved' || !p.status || isMine || isBoardOwnerPost;
-    });
-  }
-  
-  return sortPosts(list, sort);
-});
-
-// 為了相容性保留 alias，或直接更新模板 (建議更新模板以保持純淨)
-const localPostsBySection = filteredAndSortedPostsBySection;
-const localWallPosts = filteredAndSortedWallPosts;
-
-
-// --- 其他 UI 狀態 ---
+const showSettingsModal = ref(false);
+const showShareModal = ref(false);
 const showPasswordModal = ref(false);
 const passwordInput = ref('');
 const passwordError = ref('');
+const dragTargetPostId = ref<string | null>(null);
+const dragTargetSectionId = ref<string | null>(null);
+const isDraggingOver = ref(false);
+const accessDeniedType = ref<'none' | 'private'>('none');
 
-const allFlatPosts = computed(() => {
-  if (currentBoard.value?.layout === 'wall') {
-    return localWallPosts.value;
-  }
-  const result: Post[] = [];
-  localSections.value.forEach(sec => {
-    const posts = localPostsBySection.value[sec.id] || [];
-    result.push(...posts);
-  });
-  return result;
-});
-
-const handleImageError = (author: any) => {
-    if (author && author.photoURL) author.photoURL = ''; 
-};
-
-// Edit state
-const editingPostId = ref<string | null>(null);
+const isAddingSection = ref(false);
+const newSectionName = ref('');
 const editingSectionId = ref<string | null>(null);
+const editTitle = ref('');
+const editDesc = ref('');
 const editingBoardTitle = ref(false);
 const editingBoardDesc = ref(false);
 
-// Local state for edits
-const editContent = ref('');
-const editTitle = ref('');
-const editDesc = ref('');
-const editPostColor = ref('#ffffff');
-const editPostTitle = ref('');
-const expandedPostsInList = reactive<Record<string, boolean>>({});
-
-
-
-// Settings Modal Tabs
-const settingsTab = ref('basic');
-const SETTINGS_TABS = [
-  { id: 'basic', label: '看板基本', icon: 'M19 21V5a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1' },
-  { id: 'visual', label: '視覺背景', icon: 'M4 21a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H4zm0-10h16M9 3v8m6-8v8' },
-  { id: 'privacy', label: '權限隱私', icon: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z' },
-  { id: 'system', label: '系統設定', icon: 'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z' }
-];
-
-const whitelistInput = ref('');
-watch(() => appConfig.allowedEmails, (newEmails) => {
-    if (newEmails) {
-        whitelistInput.value = newEmails.join(', ');
-    }
-}, { immediate: true });
-
-const updateWhitelist = () => {
-    appConfig.allowedEmails = whitelistInput.value.split(',').map(e => e.trim()).filter(e => !!e);
-};
-
-// Comments state
-const activeCommentPostId = ref<string | null>(null);
-const commentInputs = reactive<Record<string, string>>({});
-const expandedComments = reactive<Record<string, boolean>>({});
-
-const toggleExpandComments = (postId: string) => {
-  expandedComments[postId] = !expandedComments[postId];
-};
-
-// Local state
-const newPostContent = ref('');
-const newPostTitle = ref(''); // New: Post title input
 const activeSection = ref<string | null>(null);
-const activeSectionMenuId = ref<string | null>(null); // For section menu dropdown
-const newPostColor = ref('#ffffff'); // Default white
-const POST_COLORS = [
-  { name: '預設', value: '#ffffff' },
-  { name: '灰藍', value: '#d1dce5' },
-  { name: '藕粉', value: '#e2d1d1' },
-  { name: '萌綠', value: '#d5e0d5' },
-  { name: '米黃', value: '#eee8d5' },
-  { name: '灰紫', value: '#ddd5e2' },
-  { name: '陶土', value: '#e5dcd1' },
-  { name: '海霧', value: '#d1e5e2' },
-  { name: '煙燻', value: '#e5e5e5' },
+const newPostTitle = ref('');
+const newPostContent = ref('');
+const newPostColor = ref('#ffffff');
+const pendingAttachments = ref<any[]>([]);
+const isPoll = ref(false);
+const pollOptions = ref([{ id: '1', text: '' }, { id: '2', text: '' }]);
+const editingPostId = ref<string | null>(null);
+const editPostTitle = ref('');
+const editContent = ref('');
+const editPostColor = ref('#ffffff');
+const editPollOptions = ref<any[]>([]);
+
+const previewUrl = ref<string | null>(null);
+const previewType = ref<'image' | 'video' | 'pdf' | 'link' | 'youtube' | 'audio' | null>(null);
+const previewOriginalUrl = ref<string | null>(null);
+const showYouTubeInput = ref(false);
+const youtubeUrlInput = ref('');
+const settingsTab = ref('basic');
+const unsplashSearchQuery = ref('');
+const isSearchingUnsplash = ref(false);
+const unsplashResults = ref<string[]>([]);
+const isUploadingBackground = ref(false);
+const backgroundFileInput = ref<HTMLInputElement | null>(null);
+const customBackgrounds = ref<any[]>([]);
+const whitelistInput = ref('');
+const isCopyingConfig = ref(false);
+
+const SETTINGS_TABS = [
+  { id: 'basic', label: '基本與簡介', icon: 'M13 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V9l-7-7zM13 9V3.5L18.5 9H13z' },
+  { id: 'visual', label: '外觀與背景', icon: 'M12 2C6.47 2 2 6.47 2 12s4.47 10 10 10 10-4.47 10-10S17.53 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8' }
 ];
 
-// Local liked state
-const likedPosts = reactive<Record<string, boolean>>({});
+const isInternalDragging = ref(false);
 
-const loadGlobalSettings = async () => {
-    try {
-        const docSnap = await getDoc(doc(db, `${DB_PREFIX}configs`, 'global'));
-        if (docSnap.exists()) {
-            const data = docSnap.data();
-            appConfig.appTitle = data.siteTitle || '阿墨互動牆';
-            appConfig.allowedEmails = data.whitelistEmails || [];
-            console.log('[Config] 全域設定已從資料庫載入');
-        }
-    } catch (e) {
-        console.warn('[Config] 無法讀取全域設定');
+const contentRefs = reactive<Record<string, HTMLTextAreaElement | null>>({});
+const newSectionInput = ref<HTMLInputElement | null>(null);
+
+// 4. Computed Properties
+const canEdit = computed(() => isOwner.value);
+const allFlatPosts = computed(() => boardStore.posts);
+const localSections = computed({
+    get: () => boardStore.sections,
+    set: (val: Section[]) => { 
+        // We let the @change handler call the store, but we need a setter to allow vuedraggable's internal logic
     }
-};
-
-const saveGlobalSettings = async () => {
-    if (!isOwner.value) {
-        modal.error('僅限管理員可以修改系統預設設定');
-        return;
-    }
-
-    try {
-        const { setDoc } = await import('firebase/firestore');
-        await setDoc(doc(db, `${DB_PREFIX}configs`, 'global'), {
-            siteTitle: appConfig.appTitle,
-            whitelistEmails: appConfig.allowedEmails,
-            updatedAt: new Date()
-        }, { merge: true });
-        
-        modal.success('系統全域設定已儲存！');
-    } catch (e: any) {
-        console.error(e);
-        modal.error('儲存失敗：' + (e.code === 'permission-denied' ? '您的管理員權限不足' : e.message));
-    }
-};
-
-const loadCloudinaryConfig = async () => {
-    try {
-        // 1. 載入基本參數 (公開)
-        const configDoc = await getDoc(doc(db, `${DB_PREFIX}configs`, 'cloudinary'));
-        if (configDoc.exists()) {
-            const data = configDoc.data();
-            appConfig.cloudinary.cloudName = data.cloudName || '';
-            appConfig.cloudinary.uploadPreset = data.uploadPreset || '';
-            appConfig.cloudinary.isConfigured = !!appConfig.cloudinary.cloudName;
-        }
-
-        // 2. 只有登入管理員才載入機密金鑰 (用於刪除檔案)
-        if (authStore.user) {
-            const secretsDoc = await getDoc(doc(db, `${DB_PREFIX}configs`, 'cloudinary_secrets'));
-            if (secretsDoc.exists()) {
-                const sData = secretsDoc.data();
-                appConfig.cloudinary.apiKey = sData.apiKey || '';
-                appConfig.cloudinary.apiSecret = sData.apiSecret || '';
-                console.log('[Config] Cloudinary 管理密鑰已載入');
-            }
-        }
-    } catch (e) {
-        console.warn('[Config] 載入 Cloudinary 配置失敗 (非錯誤)', e);
-    }
-};
-
-const saveCloudinaryConfig = async () => {
-    if (!isOwner.value) {
-        modal.error('僅限看板擁有者可以同步雲端設定');
-        return;
-    }
-
-    try {
-        const { setDoc } = await import('firebase/firestore');
-        // A. 基本參數
-        await setDoc(doc(db, `${DB_PREFIX}configs`, 'cloudinary'), {
-            cloudName: appConfig.cloudinary.cloudName,
-            uploadPreset: appConfig.cloudinary.uploadPreset,
-            updatedAt: new Date()
-        }, { merge: true });
-
-        // B. 機密參數
-        await setDoc(doc(db, `${DB_PREFIX}configs`, 'cloudinary_secrets'), {
-            apiKey: appConfig.cloudinary.apiKey,
-            apiSecret: appConfig.cloudinary.apiSecret,
-            updatedAt: new Date()
-        }, { merge: true });
-        
-        appConfig.cloudinary.isConfigured = true;
-        modal.success('Cloudinary 全域配置已分類儲存至資料庫！');
-    } catch (e: any) {
-        console.error(e);
-        modal.error('儲存失敗：' + (e.code === 'permission-denied' ? '您的管理員權限不足' : e.message));
-    }
-};
-
-onMounted(() => {
-    // 載入本地快取狀態與雲端配置
-    loadGlobalSettings();
-    loadCloudinaryConfig();
 });
+const localWallPosts = computed(() => boardStore.posts);
+const localPostsBySection = ref<Record<string, Post[]>>({});
+watch([() => boardStore.posts, () => boardStore.sections, currentSort], () => {
+    const map: Record<string, Post[]> = {};
+    const sections = boardStore.sections;
+    const allPosts = boardStore.posts;
 
-onUnmounted(() => {
-    // 重要：釋放 Firebase 監聽器，避免記憶體洩漏與效能下降
-    boardStore.cleanup();
-});
-
-
-
-// 使用簡易快取優化格式化效能
-const formatCache = new Map<string, string>();
-const formatContent = (text: string) => {
-    if (!text) return '';
-    if (formatCache.has(text)) return formatCache.get(text)!;
-    
-    const escaped = text
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
-    
-    const urlRegex = /(https?:\/\/[^\s]+)/g;
-    const formatted = escaped.replace(urlRegex, (url) => {
-        return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline break-all relative z-20" onclick="event.stopPropagation()">${url}</a>`;
+    sections.forEach(sec => {
+        let sectionPosts = allPosts.filter(p => p.sectionId === sec.id);
+        
+        switch (currentSort.value) {
+            case 'newest':
+                sectionPosts.sort((a, b) => (b.createdAt?.getTime?.() || 0) - (a.createdAt?.getTime?.() || 0));
+                break;
+            case 'oldest':
+                sectionPosts.sort((a, b) => (a.createdAt?.getTime?.() || 0) - (b.createdAt?.getTime?.() || 0));
+                break;
+            case 'title-asc':
+                sectionPosts.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+                break;
+            case 'title-desc':
+                sectionPosts.sort((a, b) => (b.title || '').localeCompare(a.title || ''));
+                break;
+            case 'author-asc':
+                sectionPosts.sort((a, b) => (a.author.displayName || '').localeCompare(b.author.displayName || ''));
+                break;
+            case 'author-desc':
+                sectionPosts.sort((a, b) => (b.author.displayName || '').localeCompare(a.author.displayName || ''));
+                break;
+            case 'manual':
+            default:
+                sectionPosts.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+                break;
+        }
+        map[sec.id] = sectionPosts;
     });
-    
-    // 限制快取大小
-    if (formatCache.size > 500) formatCache.clear();
-    formatCache.set(text, formatted);
-    return formatted;
-};
+    localPostsBySection.value = map;
+}, { immediate: true, deep: true });
+const pendingCount = computed(() => boardStore.posts.filter((p: Post) => p.status === 'pending').length);
 
-const isLiked = (postId: string) => {
-    // Check both reactive state and local storage
-    if (likedPosts[postId]) return true;
-    return !!localStorage.getItem(`ahmo_liked_${postId}`);
-};
+const slideshow = useSlideshow(currentBoard, localSections, computed(() => boardStore.postsBySection));
+const { 
+    showSlideshow, 
+    slides, 
+    currentSlide, 
+    currentSlideIndex, 
+    isPlaying, 
+    togglePlayPause, 
+    toggleFullscreen, 
+    closeSlideshow, 
+    nextSlide, 
+    prevSlide
+} = slideshow;
 
-const pendingAttachments = ref<any[]>([]);
-const fileInput = ref<HTMLInputElement | null>(null);
-const cameraInput = ref<HTMLInputElement | null>(null);
-const showSettingsModal = ref(false);
-const showShareModal = ref(false);
-const contentRefs = ref<Record<string, HTMLTextAreaElement | null>>({});
+// 5. Core Methods
+const loadBoard = async () => {
+    isLoading.value = true;
+    try {
+        const boardDoc = await getDoc(doc(db, `${DB_PREFIX}boards`, boardId.value));
+        if (boardDoc.exists()) {
+            const boardData = {
+                id: boardDoc.id,
+                ...boardDoc.data(),
+                createdAt: boardDoc.data().createdAt?.toDate ? boardDoc.data().createdAt.toDate() : new Date(),
+                privacy: boardDoc.data().privacy || 'public',
+                guestPermission: boardDoc.data().guestPermission || 'edit'
+            } as Board;
 
-// Guest Identity
-const showGuestNameModal = ref(false);
-const guestNameInput = ref('');
-const pendingAction = ref<(() => void) | null>(null);
-const accessDeniedType = ref<'none' | 'private'>('none');
+            if (!isOwner.value && boardData.privacy === 'private') {
+                accessDeniedType.value = 'private';
+                isLoading.value = false;
+                return;
+            }
 
-const toggleSectionMenu = (sectionId: string) => {
-    if (activeSectionMenuId.value === sectionId) {
-        activeSectionMenuId.value = null;
-    } else {
-        activeSectionMenuId.value = sectionId;
+            currentBoard.value = boardData;
+            boardStore.currentBoard = boardData;
+            document.title = (appConfig.appTitle || '阿墨互動牆') + ' - ' + boardData.title;
+            boardStore.subscribeToBoard(boardId.value);
+        } else {
+            modal.error('看板不存在');
+            router.push('/');
+        }
+    } catch (err) {
+        console.error(err);
+    } finally {
+        isLoading.value = false;
     }
-};
-
-// Close menu when clicking outside
-const closeSectionMenu = () => {
-    activeSectionMenuId.value = null;
 };
 
 const requireGuestName = (action: () => void) => {
-    if (authStore.user) {
-        action();
-        return;
-    }
-    if (guestName.value) {
-        action();
-        return;
-    }
-    pendingAction.value = action;
-    showGuestNameModal.value = true;
+    if (authStore.user || guestName.value) { action(); }
+    else { pendingAction.value = action; showGuestNameModal.value = true; }
 };
 
-const clearGuestName = () => {
-    guestName.value = '';
-    sessionStorage.removeItem('ahmo_guest_name');
-};
-
-const saveGuestName = () => {
-    if (!guestNameInput.value.trim()) return;
-    guestName.value = guestNameInput.value.trim();
-    sessionStorage.setItem('ahmo_guest_name', guestName.value);
-    showGuestNameModal.value = false;
-    if (pendingAction.value) {
-        pendingAction.value();
-        pendingAction.value = null;
+const confirmGuestName = () => {
+    if (guestNameInput.value.trim()) {
+        guestName.value = guestNameInput.value.trim();
+        sessionStorage.setItem('ahmo_guest_name', guestName.value);
+        showGuestNameModal.value = false;
+        if (pendingAction.value) { pendingAction.value(); pendingAction.value = null; }
     }
 };
 
-// Image logic removed per user request
+const goHome = () => router.push('/');
 
-
-const openShareModal = () => {
-  showShareModal.value = true;
-};
-
-// --- Custom Background Upload ---
-const customBackgrounds = ref<{url: string, id: string, publicId?: string, resourceType?: string}[]>([]);
-const isUploadingBackground = ref(false);
-const backgroundFileInput = ref<HTMLInputElement | null>(null);
-
-// Load gallery from LocalStorage (Simple, No Firebase, No CORS)
-const loadCustomBackgrounds = () => {
-    try {
-        const saved = localStorage.getItem('ahmo_bg_gallery');
-        if (saved) {
-            customBackgrounds.value = JSON.parse(saved);
-        }
-    } catch (e) {
-        console.error('Failed to load local gallery:', e);
+// 6. UI Handlers
+const handleSortUpdate = async (val: string) => {
+    currentSort.value = val;
+    if (isOwner.value && boardId.value) {
+        await updateDoc(doc(db, `${DB_PREFIX}boards`, boardId.value), { defaultSort: val });
     }
 };
 
-// Initial load
-onMounted(() => {
-    loadCustomBackgrounds();
-});
+const handleVote = (post: Post, optionId: string) => postActions.handleVote(post, optionId, guestName.value, (action) => requireGuestName(action));
+const handleLike = (post: Post) => postActions.handleLike(post);
+const handleApprovePost = (postId: string) => postActions.handleApprovePost(postId);
+const handleBatchApprove = () => postActions.handleBatchApprove(pendingCount.value, boardStore.posts);
+const handleDelete = (post: Post) => postActions.handleDelete(post);
+const handleComment = (postId: string, content: string) => postActions.handleComment(postId, content, guestName.value, (action) => requireGuestName(action));
 
-const saveToLocalGallery = (item: {url: string, id: string, publicId?: string, resourceType?: string}) => {
-    // Keep last 20 backgrounds
-    const newList = [item, ...customBackgrounds.value.filter(bg => bg.url !== item.url)].slice(0, 20);
-    customBackgrounds.value = newList;
-    localStorage.setItem('ahmo_bg_gallery', JSON.stringify(newList));
-};
-
-const compressImage = (file: File): Promise<Blob> => {
-    return new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            const img = new Image();
-            img.onload = () => {
-                const canvas = document.createElement('canvas');
-                const MAX_WIDTH = 800;
-                let width = img.width;
-                let height = img.height;
-
-                if (width > MAX_WIDTH) {
-                    height *= MAX_WIDTH / width;
-                    width = MAX_WIDTH;
-                }
-
-                canvas.width = width;
-                canvas.height = height;
-                const ctx = canvas.getContext('2d');
-                ctx?.drawImage(img, 0, 0, width, height);
-                canvas.toBlob((blob) => {
-                    resolve(blob || file);
-                }, 'image/jpeg', 0.8);
-            };
-            img.src = e.target?.result as string;
-        };
-        reader.readAsDataURL(file);
-    });
-};
-
-const handleBackgroundUpload = async (e: Event) => {
-    const files = (e.target as HTMLInputElement).files;
-    if (!files?.length) return;
-    
-    isUploadingBackground.value = true;
-    try {
-        const file = files[0];
-        const compressedBlob = await compressImage(file);
-        
-        // Switch to Cloudinary
-        const folderName = `ahmo-wall/background`;
-        const result = await uploadFile(compressedBlob as any, folderName);
-        
-        if (result) {
-            // Save to Local Gallery (No Firebase needed!)
-            saveToLocalGallery({
-                url: result.url,
-                id: result.publicId,
-                publicId: result.publicId,
-                resourceType: result.resourceType
-            });
-            
-            currentBoard.value!.backgroundImage = result.url;
-            modal.success('背景上傳成功！');
-        } else {
-            throw new Error('Cloudinary 上傳失敗');
-        }
-    } catch (err: any) {
-        console.error('BG Upload Failed:', err);
-        modal.error('背景上傳失敗：' + (err.message || '未知錯誤'));
-    } finally {
-        isUploadingBackground.value = false;
-        if (backgroundFileInput.value) backgroundFileInput.value.value = '';
+const handleDragOver = (e: DragEvent) => { 
+    if (isInternalDragging.value) return;
+    if (e.dataTransfer?.types.includes('Files')) {
+        e.preventDefault(); 
+        isDraggingOver.value = true; 
     }
 };
-
-const handleDeleteBackground = async (bgId: string, publicId?: string, resourceType?: string) => {
-    if (!confirm('確定要刪除此背景圖片嗎？這將從雲端與圖庫中永久移除。')) return;
-    
-    try {
-        // 1. Delete from Cloudinary
-        if (publicId) {
-            await deleteFile(publicId, undefined, resourceType);
-        }
-        
-        // 2. Remove from Local Gallery
-        customBackgrounds.value = customBackgrounds.value.filter(bg => bg.id !== bgId);
-        localStorage.setItem('ahmo_bg_gallery', JSON.stringify(customBackgrounds.value));
-        
-        modal.success('背景已從紀錄中移除');
-    } catch (err: any) {
-        console.error('Delete BG Failed:', err);
-        modal.error('刪除失敗：' + (err.message || '未知錯誤'));
-    }
-};
-
-
-const handleDragOver = (e: DragEvent) => {
-  e.preventDefault();
-  // Only show overlay if dragging files
-  if (e.dataTransfer?.types.includes('Files')) {
-    isDraggingOver.value = true;
-  }
-};
-
-const handleDragLeave = (e: DragEvent) => {
-  e.preventDefault();
-  if (e.relatedTarget === null) {
+const handleDragLeave = () => { isDraggingOver.value = false; };
+const handleDrop = (e: DragEvent) => { 
+    if (!e.dataTransfer?.types.includes('Files')) return;
+    e.preventDefault(); 
     isDraggingOver.value = false;
-  }
+    if (dragTargetPostId.value || dragTargetSectionId.value) return;
+    if (!canContribute.value) return;
+    const targetSectionId = activeSection.value || (localSections.value[0]?.id);
+    if (targetSectionId) handleNewPostDrop(targetSectionId, e);
 };
 
-const handlePostDragOver = (postId: string, e: DragEvent) => {
-  // Ignore if not dragging files (e.g. sorting posts)
-  if (!e.dataTransfer?.types.includes('Files')) return;
-
-  e.preventDefault();
-  e.stopPropagation();
-  dragTargetPostId.value = postId;
-};
-
-// Section drag logic removed if unused
-
-const handlePostDrop = async (post: Post, e: DragEvent) => {
-  e.preventDefault();
-  e.stopPropagation();
-  isDraggingOver.value = false;
-  dragTargetPostId.value = null;
-  const files = e.dataTransfer?.files;
-  if (!files?.length) return;
-
-  const newAttachments = [...(post.attachments || [])];
-  
-    for (let i = 0; i < files.length; i++) {
-    try {
-      const folderName = `ahmo-wall/${currentBoard.value?.title || 'Shared'}`;
-      const result = await uploadFile(files[i], folderName);
-      if (result) {
-        // Use file type instead of Cloudinary resourceType for better precision
-        const fileType = files[i].type;
-        const type = fileType.startsWith('image/') ? 'image' : 
-                     fileType.startsWith('video/') ? 'video' : 
-                     fileType.startsWith('audio/') ? 'audio' :
-                     fileType === 'application/pdf' ? 'pdf' : 'link';
-
-        // Clean data for Firestore (remove undefined values)
-        const attachmentData = JSON.parse(JSON.stringify({
-          type,
-          url: result.url,
-          publicId: result.publicId,
-          resourceType: result.resourceType,
-          deleteToken: result.deleteToken,
-          name: result.name,
-          thumbnailUrl: result.thumbnailUrl,
-          format: result.format
-        }));
-
-        newAttachments.push(attachmentData);
-      } else {
-        throw new Error('Cloudinary 設定無效或上傳失敗，請檢查環境變數');
-      }
-    } catch (err: any) {
-      modal.error(`上傳失敗 (${files[i].name})：${err.message || '未知錯誤'}`);
+const handlePostDragOver = (postId: string, e: DragEvent) => { 
+    if (isInternalDragging.value) return;
+    if (e.dataTransfer?.types.includes('Files')) {
+        e.preventDefault(); 
+        dragTargetPostId.value = postId; 
     }
-  }
-
-  await boardStore.updatePost(boardId.value, post.id, { attachments: newAttachments });
-  modal.success(`已更新貼文附件 (${files.length} 檔案)`);
+};
+const handlePostDrop = async (post: Post, e: DragEvent) => { 
+    e.preventDefault(); 
+    dragTargetPostId.value = null; 
+    const files = e.dataTransfer?.files;
+    if (!files?.length) return;
+    for (let i = 0; i < files.length; i++) {
+        const res = await uploadFile(files[i], `ahmo-wall/${currentBoard.value?.title || 'Shared'}`);
+        if (res) {
+            const attachments = [...(post.attachments || []), {
+                type: (files[i].type.startsWith('image/') ? 'image' : 'link') as any,
+                url: res.url,
+                publicId: res.publicId,
+                name: files[i].name
+            }];
+            await boardStore.updatePost(boardId.value, post.id, { attachments });
+        }
+    }
 };
 
 const handleNewPostDrop = async (sectionId: string, e: DragEvent) => {
-  e.preventDefault();
-  e.stopPropagation();
-  isDraggingOver.value = false;
-  dragTargetSectionId.value = null;
-  const files = e.dataTransfer?.files;
-  if (!files?.length) return;
-
-  activeSection.value = sectionId;
-  
-  for (let i = 0; i < files.length; i++) {
-    try {
-      const folderName = `ahmo-wall/${currentBoard.value?.title || 'Shared'}`;
-      const result = await uploadFile(files[i], folderName);
-      if (result) {
-        const fileType = files[i].type;
-        const type = fileType.startsWith('image/') ? 'image' : 
-                     fileType.startsWith('video/') ? 'video' : 
-                     fileType.startsWith('audio/') ? 'audio' :
-                     fileType === 'application/pdf' ? 'pdf' : 'link';
-
-        const attachmentData = JSON.parse(JSON.stringify({
-          type,
-          url: result.url,
-          publicId: result.publicId,
-          resourceType: result.resourceType,
-          deleteToken: result.deleteToken,
-          name: result.name,
-          thumbnailUrl: result.thumbnailUrl,
-          format: result.format
-        }));
-
-        pendingAttachments.value.push(attachmentData);
-      } else {
-        throw new Error('Cloudinary 設定無效或上傳失敗');
-      }
-    } catch (err: any) {
-      modal.error(`上傳失敗 (${files[i].name})：${err.message || '未知錯誤'}`);
-    }
-  }
-};
-
-const openLink = (url?: string, type = 'link') => {
-  if (!url) return;
-  window.open(getViewUrl(url, type), '_blank');
-};
-
-const openPreview = (url: string, type: 'image' | 'pdf') => {
-  const viewUrl = getViewUrl(url, type);
-  previewOriginalUrl.value = viewUrl;
-  previewUrl.value = viewUrl;
-  previewType.value = type;
-};
-
-// Post Detail Functions — use ID + computed for real-time updates
-const expandedPostId = ref<string | null>(null);
-const expandedPost = computed(() => {
-  if (!expandedPostId.value) return null;
-  return allFlatPosts.value.find(p => p.id === expandedPostId.value) || null;
-});
-const expandedPostIndex = computed(() => {
-  if (!expandedPost.value) return -1;
-  return allFlatPosts.value.findIndex(p => p.id === expandedPost.value!.id);
-});
-
-const openPostDetail = (post: Post) => {
-  expandedPostId.value = post.id;
-};
-const closePostDetail = () => {
-  expandedPostId.value = null;
-};
-const navigatePost = (direction: 'prev' | 'next') => {
-  const idx = expandedPostIndex.value;
-  if (idx === -1) return;
-  const list = allFlatPosts.value;
-  if (direction === 'prev' && idx > 0) {
-    expandedPostId.value = list[idx - 1].id;
-  } else if (direction === 'next' && idx < list.length - 1) {
-    expandedPostId.value = list[idx + 1].id;
-  }
-};
-
-const handleDrop = async (e: DragEvent) => {
-  e.preventDefault();
-  isDraggingOver.value = false;
-  
-  // If we drop globally and no post/section was targeted specifically
-  if (dragTargetPostId.value || dragTargetSectionId.value) return;
-
-  // Permission check
-  if (!canContribute.value) {
-      modal.error('您只能在公開或自己的看板上傳檔案');
-      return;
-  }
-
-  const files = e.dataTransfer?.files;
-  if (!files || files.length === 0) return;
-
-  let targetSectionId = activeSection.value;
-  if (!targetSectionId && localSections.value.length > 0) {
-    targetSectionId = localSections.value[0].id;
-    activeSection.value = targetSectionId;
-  } else if (!targetSectionId) {
-    modal.error('請先建立或選擇一個區段再上傳檔案');
-    return;
-  }
-
-  handleNewPostDrop(targetSectionId, e);
-};
-
-const copyLink = async () => {
-    // Generate link including config
-    const url = generateShareLink();
-    await navigator.clipboard.writeText(url);
-    isCopyingConfig.value = true;
-    setTimeout(() => {
-      isCopyingConfig.value = false;
-    }, 2000);
-    modal.success('加密分享連結已複製！開啟此連結的人將自動套用您的資料庫設定。');
-};
-
-const pendingCount = computed(() => {
-    if (!boardStore.posts) return 0;
-    return boardStore.posts.filter(p => p.status === 'pending').length;
-});
-
-const handleBatchApprove = async () => {
-    if (pendingCount.value === 0) return;
-    if (!confirm(`確定要一次核准所有 ${pendingCount.value} 則待審貼文嗎？`)) return;
-    
-    try {
-         const pending = boardStore.posts.filter(p => p.status === 'pending');
-         const updates = pending.map(p => updateDoc(doc(db, `${DB_PREFIX}boards`, boardId.value, 'posts', p.id), { status: 'approved' }));
-         await Promise.all(updates);
-         modal.success(`已核准 ${pending.length} 則貼文！`);
-    } catch (e: any) {
-        console.error(e);
-        modal.error('核准失敗: ' + e.message);
+    e.preventDefault();
+    const files = e.dataTransfer?.files;
+    if (!files?.length) return;
+    activeSection.value = sectionId;
+    for (let i = 0; i < files.length; i++) {
+        const res = await uploadFile(files[i], `ahmo-wall/${currentBoard.value?.title || 'Shared'}`);
+        if (res) {
+            pendingAttachments.value.push({
+                type: files[i].type.startsWith('image/') ? 'image' : 'link',
+                url: res.url,
+                publicId: res.publicId,
+                name: files[i].name
+            });
+        }
     }
 };
 
-const submitPassword = async () => {
-    if (!passwordInput.value) return;
-    
-    // Verify locally first if possible (insecure but fast) or assume store check
-    // Actually store check is better
-    const valid = await boardStore.checkBoardPassword(boardId.value, passwordInput.value);
-    
-    if (valid) {
-        showPasswordModal.value = false;
+const submitPost = async (sectionId: string) => {
+    if (!newPostContent.value && !pendingAttachments.value.length && !isPoll.value) return;
+    requireGuestName(async () => {
+        const postData = {
+            sectionId,
+            title: newPostTitle.value,
+            content: newPostContent.value,
+            attachments: [...pendingAttachments.value],
+            color: newPostColor.value,
+            likes: 0
+        };
+        if (isPoll.value) {
+            (postData as any).poll = {
+                question: newPostTitle.value || '投票',
+                options: pollOptions.value.filter(o => o.text.trim()).map(o => ({ id: o.id, text: o.text, voters: [] })),
+                totalVotes: 0
+            };
+        }
+        await boardStore.createPost(boardId.value, postData as any, guestName.value);
+        newPostTitle.value = ''; newPostContent.value = ''; pendingAttachments.value = []; isPoll.value = false; activeSection.value = null;
+    });
+};
+
+const startEditPost = (post: Post) => {
+    editingPostId.value = post.id;
+    editPostTitle.value = post.title || '';
+    editContent.value = post.content || '';
+    editPostColor.value = post.color || '#ffffff';
+    if (post.poll) {
+        editPollOptions.value = JSON.parse(JSON.stringify(post.poll.options));
+    } else {
+        editPollOptions.value = [];
+    }
+};
+
+const saveEditPost = async (post: Post) => {
+    const updateData: any = {
+        title: editPostTitle.value,
+        content: editContent.value,
+        color: editPostColor.value
+    };
+    if (post.poll && editPollOptions.value.length) {
+        updateData.poll = {
+            ...post.poll,
+            options: editPollOptions.value.filter(o => o.text.trim())
+        };
+    }
+    await boardStore.updatePost(boardId.value, post.id, updateData);
+    editingPostId.value = null;
+    editPollOptions.value = [];
+};
+
+const deleteAttachment = async (post: Post, attachmentIdx: number) => {
+    const confirmed = await modal.confirm('確定要刪除附件嗎？');
+    if (!confirmed) return;
+    const newAttachments = [...(post.attachments || [])];
+    newAttachments.splice(attachmentIdx, 1);
+    await boardStore.updatePost(boardId.value, post.id, { attachments: newAttachments });
+};
+
+const verifyPassword = () => {
+    if (passwordInput.value === currentBoard.value?.password) {
         isPasswordVerified.value = true;
         sessionStorage.setItem(`ahmo_board_pw_${boardId.value}`, 'verified');
-        loadBoard(); // Reload to proceed
-    } else {
-        passwordError.value = '密碼錯誤，請重試。';
+        showPasswordModal.value = false;
+    } else { passwordError.value = '密碼錯誤'; }
+};
+
+const clearGuestName = () => { guestName.value = ''; sessionStorage.removeItem('ahmo_guest_name'); };
+const removePendingAttachment = (idx: number) => { pendingAttachments.value.splice(idx, 1); };
+const openShareModal = () => { showShareModal.value = true; };
+
+const addPollOption = () => { pollOptions.value.push({ id: Date.now().toString(), text: '' }); };
+const removePollOption = (idx: number) => { pollOptions.value.splice(idx, 1); };
+
+const createSection = () => {
+    isAddingSection.value = true;
+    newSectionName.value = '';
+    nextTick(() => { newSectionInput.value?.focus(); });
+};
+
+const cancelAddingSection = () => { isAddingSection.value = false; newSectionName.value = ''; };
+
+const confirmCreateSection = async () => {
+    if (!newSectionName.value.trim()) { isAddingSection.value = false; return; }
+    await boardStore.createSection(boardId.value, newSectionName.value.trim());
+    isAddingSection.value = false;
+    newSectionName.value = '';
+};
+
+const activeSectionMenuId = ref<string | null>(null);
+const toggleSectionMenu = (id: string) => { activeSectionMenuId.value = activeSectionMenuId.value === id ? null : id; };
+const closeSectionMenu = () => { activeSectionMenuId.value = null; };
+
+const startEditSection = (section: Section) => {
+    editingSectionId.value = section.id;
+    editTitle.value = section.title;
+};
+
+const saveEditSection = async (section: Section) => {
+    if (editTitle.value.trim() && editTitle.value !== section.title) {
+        await updateDoc(doc(db, `${DB_PREFIX}boards`, boardId.value, 'sections', section.id), { title: editTitle.value.trim() });
+    }
+    editingSectionId.value = null;
+};
+
+const handleDeleteSection = async (id: string) => {
+    const confirmed = await modal.confirm('確定要刪除區段嗎？內容也會被刪除。');
+    if (confirmed) {
+        await boardStore.deleteSection(boardId.value, id);
     }
 };
 
-// Unsplash Search
-const unsplashSearchQuery = ref('');
-const unsplashResults = ref<string[]>([]);
-const isSearchingUnsplash = ref(false);
+const startEditBoardTitle = () => { editTitle.value = currentBoard.value?.title || ''; editingBoardTitle.value = true; };
+const saveEditBoardTitle = async () => {
+    if (editTitle.value.trim() && editTitle.value !== currentBoard.value?.title) {
+        await updateDoc(doc(db, `${DB_PREFIX}boards`, boardId.value), { title: editTitle.value.trim() });
+    }
+    editingBoardTitle.value = false;
+};
+
+const startEditBoardDesc = () => { editDesc.value = currentBoard.value?.description || ''; editingBoardDesc.value = true; };
+const saveEditBoardDesc = async () => {
+    await updateDoc(doc(db, `${DB_PREFIX}boards`, boardId.value), { description: editDesc.value.trim() });
+    editingBoardDesc.value = false;
+};
+
+const formatRelativeTime = (date: Date) => {
+    if (!date) return '剛剛';
+    const d = date instanceof Date ? date : (date as any).toDate ? (date as any).toDate() : new Date(date);
+    const now = new Date();
+    const diff = now.getTime() - d.getTime();
+    if (diff < 30000) return '剛剛';
+    if (diff < 3600000) return `${Math.floor(diff / 60000)} 分鐘前`;
+    if (diff < 86400000) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return d.toLocaleDateString();
+};
+
+const handleImageError = (author: any) => { if (author && author.photoURL) author.photoURL = ''; };
+const getViewUrl = (url: string) => url;
+const isLiked = (postId: string) => !!localStorage.getItem(`ahmo_liked_${postId}`);
+const formatContent = (text: string) => text;
+
+// --- Post Navigation & Expansion ---
+const expandedPostId = ref<string | null>(null);
+const expandedPost = computed(() => boardStore.posts.find(p => p.id === expandedPostId.value) || null);
+const expandedPostIndex = computed(() => boardStore.posts.findIndex(p => p.id === expandedPostId.value));
+
+const openPostDetail = (post: Post) => { expandedPostId.value = post.id; };
+const closePostDetail = () => { expandedPostId.value = null; };
+
+const navigatePost = (dir: 'next' | 'prev') => {
+    const idx = expandedPostIndex.value;
+    if (dir === 'next' && idx < boardStore.posts.length - 1) {
+        expandedPostId.value = boardStore.posts[idx + 1].id;
+    } else if (dir === 'prev' && idx > 0) {
+        expandedPostId.value = boardStore.posts[idx - 1].id;
+    }
+};
+
+const likedPosts = reactive<Record<string, boolean>>({});
+const expandedComments = reactive<Record<string, boolean>>({});
+const expandedPostsInList = reactive<Record<string, boolean>>({});
+const commentInputs = reactive<Record<string, string>>({});
+
+const toggleExpandComments = (postId: string) => { expandedComments[postId] = !expandedComments[postId]; };
+const toggleComments = (post: Post) => { toggleExpandComments(post.id); };
+
+const submitComment = async (post: Post) => {
+    const content = commentInputs[post.id]?.trim();
+    if (!content) return;
+    await postActions.handleComment(post.id, content, guestName.value, (action: () => void) => requireGuestName(action));
+    commentInputs[post.id] = '';
+};
+
+const handleDeleteComment = async (post: Post, commentId: string) => {
+    const confirmed = await modal.confirm('確定要刪除留言嗎？');
+    if (confirmed) {
+        await postActions.handleDeleteComment(post.id, commentId);
+    }
+};
+
+const cancelEditPost = () => { editingPostId.value = null; };
+const focusElement = (id: string) => { nextTick(() => document.getElementById(id)?.focus()); };
+
+const getVideoThumbnail = (url: string) => {
+    if (url.includes('cloudinary')) {
+        return url.replace(/\.[^/.]+$/, '.jpg');
+    }
+    return '';
+};
+
+const openPreview = (url: string, type: 'image' | 'video' | 'pdf' | 'link' | 'youtube' | 'audio' = 'image', originalUrl?: string) => {
+    previewUrl.value = url;
+    previewType.value = type;
+    previewOriginalUrl.value = originalUrl || url;
+};
+
+const openLink = (url: string, type: string) => {
+    window.open(url, '_blank');
+};
 
 const searchUnsplash = async () => {
     if (!unsplashSearchQuery.value.trim()) return;
     isSearchingUnsplash.value = true;
-    try {
-        // 使用 Vite 配置的代理路徑以解決 CORS 問題
-        const response = await fetch(`/unsplash-api/search/photos?query=${encodeURIComponent(unsplashSearchQuery.value)}&per_page=12`);
-        if (!response.ok) throw new Error('Network response was not ok');
-        const data = await response.json();
-        if (data.results) {
-            unsplashResults.value = data.results.map((img: any) => 
-                `${img.urls.raw}&auto=format&fit=crop&w=1600&q=80`
-            );
-        }
-    } catch (e) {
-        console.error('Unsplash search failed:', e);
-        // 若 fetch 失敗（例如 CORS），提示使用者或使用備案
-        modal.error('搜尋失敗，這可能是受到瀏覽器安全性限制。');
-    } finally {
-        isSearchingUnsplash.value = false;
-    }
+    const query = encodeURIComponent(unsplashSearchQuery.value.trim());
+    // Use reliable stock photography first to avoidbot-like placeholders
+    unsplashResults.value = [
+        // Real Photos (LoremFlickr) - Append 'scenery' for better results
+        `https://loremflickr.com/1920/1080/${query},scenery?random=1`,
+        `https://loremflickr.com/1920/1080/${query},nature?random=2`,
+        `https://loremflickr.com/1920/1080/${query},wallpaper?random=3`,
+        // High Quality Direct Unsplash Links
+        `https://images.unsplash.com/photo-1501785888041-af3ef285b470?auto=format&fit=crop&w=1920&h=1080&q=80`,
+        `https://images.unsplash.com/photo-1470770841072-f978cf4d019e?auto=format&fit=crop&w=1920&h=1080&q=80`,
+        // AI as a last resort with very descriptive scenery enforcement
+        `https://image.pollinations.ai/prompt/stunning%20wide%20shot%20of%20${query}%20nature%20background%204k?width=1920&height=1080&nologo=true&seed=${Math.floor(Math.random() * 1000)}`,
+        `https://image.pollinations.ai/prompt/artistic%20abstract%20wallpaper%20of%20${query}%20cinematic?width=1920&height=1080&nologo=true&seed=${Math.floor(Math.random() * 1000) + 1}`
+    ];
+    isSearchingUnsplash.value = false;
 };
 
 const selectUnsplashImage = (url: string) => {
@@ -984,687 +554,138 @@ const selectUnsplashImage = (url: string) => {
     }
 };
 
-// Load board data
-
-// Load board data
-const loadBoard = async () => {
-  console.log('loadBoard called. BoardID:', boardId.value);
-  if (!boardId.value) {
-    router.push('/');
-    return;
-  }
-  
-  // Reset State
-  isLoading.value = true;
-  accessDeniedType.value = 'none';
-  showPasswordModal.value = false;
-  
-  try {
-    const boardDoc = await getDoc(doc(db, `${DB_PREFIX}boards`, boardId.value));
-    
-    if (boardDoc.exists()) {
-      const boardData = {
-        id: boardDoc.id,
-        ...boardDoc.data(),
-        createdAt: boardDoc.data().createdAt?.toDate ? boardDoc.data().createdAt.toDate() : new Date(),
-        privacy: boardDoc.data().privacy || 'public', // Default to public
-        guestPermission: boardDoc.data().guestPermission || 'edit'
-      } as Board;
-
-      // Check Permissions
-      const isPasswordBoard = boardData.privacy === 'password';
-      const isPrivateBoard = boardData.privacy === 'private';
-      const isMyBoard = authStore.user && boardData.ownerId === authStore.user.uid;
-      
-      console.log('Board Loaded:', {
-          id: boardData.id,
-          privacy: boardData.privacy,
-          owner: boardData.ownerId,
-          currentUser: authStore.user?.uid,
-          isMyBoard,
-          isPrivate: isPrivateBoard,
-          isPassword: isPasswordBoard
-      });
-
-      if (!isMyBoard) {
-          if (isPrivateBoard) {
-               console.warn('Private board access denied');
-               accessDeniedType.value = 'private'; // Trigger Access Denied UI
-               currentBoard.value = null; 
-               isLoading.value = false;
-               return;
-          } else if (isPasswordBoard) {
-               // Check session storage
-               if (sessionStorage.getItem(`ahmo_board_pw_${boardData.id}`) === 'verified') {
-                   isPasswordVerified.value = true;
-               }
-
-               if (!isPasswordVerified.value) {
-                   console.log('Password protection triggered');
-                   currentBoard.value = boardData; 
-                   showPasswordModal.value = true; 
-                   isLoading.value = false; 
-                   return;
-               }
-          }
-      }
-
-      currentBoard.value = boardData;
-      // Sync to store for actions to usage
-      boardStore.currentBoard = boardData;
-      
-      // Update Title with App Title
-      const appTitle = appConfig.appTitle || '阿墨互動牆';
-      document.title = `${appTitle} - ${boardData.title}`;
-      
-      boardStore.subscribeToBoard(boardId.value);
-    } else {
-        modal.error('看板不存在或已被刪除');
-        router.push('/');
+const handleBackgroundUpload = async (e: Event) => {
+    const files = (e.target as HTMLInputElement).files;
+    if (!files?.length) return;
+    isUploadingBackground.value = true;
+    try {
+        const res = await uploadFile(files[0], 'ahmo-wall-bg');
+        if (res && currentBoard.value) {
+            currentBoard.value.backgroundImage = res.url;
+            customBackgrounds.value.push({ id: Date.now().toString(), url: res.url, publicId: res.publicId });
+        }
+    } finally {
+        isUploadingBackground.value = false;
+        (e.target as HTMLInputElement).value = '';
     }
-  } catch (err: any) {
-    console.error('Failed to load board:', err);
-    
-    if (err.code === 'permission-denied') {
-        console.warn('Permission denied - likely private or password protected with strict rules');
-        // Treat as private since we can't read metadata to know if it's password protected
-        accessDeniedType.value = 'private'; 
-    } else {
-        // Only show error for other failures (network, etc)
-        // modal.error('讀取看板失敗'); 
+};
+
+const handleDeleteBackground = (id: string, publicId?: string) => {
+    // If we have a publicId, we could technically call Cloudinary delete, 
+    // but for now we just remove it from the local board state which is synced.
+    customBackgrounds.value = customBackgrounds.value.filter(bg => bg.id !== id);
+    if (currentBoard.value?.backgroundImage?.includes(id) || (publicId && currentBoard.value?.backgroundImage?.includes(publicId))) {
+        currentBoard.value.backgroundImage = '';
     }
-  } finally {
-    isLoading.value = false;
-  }
 };
 
 const saveBoardSettings = async () => {
     if (!currentBoard.value) return;
-    
+    const success = await boardSettings.saveBoardSettings(currentBoard.value);
+    if (success) showSettingsModal.value = false;
+};
+
+const saveGlobalSettings = () => boardSettings.saveGlobalSettings(isOwner.value);
+const saveCloudinaryConfig = () => boardSettings.saveCloudinaryConfig(isOwner.value);
+const saveSettings = saveBoardSettings;
+
+const generateShareLink = () => {
+    return window.location.href;
+};
+
+const copyLink = async () => {
     try {
-        await updateDoc(doc(db, `${DB_PREFIX}boards`, boardId.value), {
-            title: currentBoard.value.title,
-            description: currentBoard.value.description,
-            layout: currentBoard.value.layout,
-            backgroundImage: currentBoard.value.backgroundImage,
-            privacy: currentBoard.value.privacy,
-            password: currentBoard.value.password || '',
-            guestPermission: currentBoard.value.guestPermission || 'edit',
-            moderationEnabled: currentBoard.value.moderationEnabled || false
-        });
-        showSettingsModal.value = false;
-        modal.success('看板設定已儲存');
-        
-        // Reload to ensure state reflects new privacy settings (e.g. if changed to Private)
-        loadBoard();
-        
-    } catch (err: any) {
-        console.error('Save failed:', err);
-        modal.error('設定儲存失敗: ' + err.message);
+        await navigator.clipboard.writeText(generateShareLink());
+        isCopyingConfig.value = true;
+        setTimeout(() => isCopyingConfig.value = false, 2000);
+    } catch (err) {
+        modal.error('複製連結失敗');
     }
-};
-
-// Watch for route changes
-watch(() => route.params.id, (newId) => {
-  console.log('Route param changed:', newId);
-  if (newId) {
-    loadBoard();
-  }
-}, { immediate: true });
-
-// Watch for auth state changes (in case of page refresh)
-watch(() => authStore.user, (user) => {
-    console.log('Auth state changed:', user);
-    if (user && route.params.id) {
-        loadBoard();
-    }
-});
-
-onMounted(() => {
-    console.log('DashboardView mounted');
-    if (route.query.action === 'settings') {
-        showSettingsModal.value = true;
-    }
-});
-
-const focusElement = (id: string) => {
-  nextTick(() => {
-    document.getElementById(id)?.focus();
-  });
-};
-
-// Inline Editing Functions
-// Inline Editing Functions
-const startEditPost = (post: Post) => {
-  // Allow if: Author OR Guest Author OR Board Owner
-  const isAuthor = post.author.uid === authStore.user?.uid;
-  const isGuestAuthor = !authStore.user && post.author.displayName === guestName.value && !!guestName.value;
-  const isBoardOwner = currentBoard.value?.ownerId === authStore.user?.uid;
-
-  if (!isAuthor && !isGuestAuthor && !isBoardOwner) return;
-  editingPostId.value = post.id;
-  editPostTitle.value = post.title || '';
-  editContent.value = post.content;
-  editPostColor.value = post.color || '#ffffff';
-  pendingAttachments.value = []; // Clear for edit session
-  
-  if (post.poll) {
-    editPollOptions.value = post.poll.options.map(opt => ({ id: opt.id, text: opt.text }));
-  } else {
-    editPollOptions.value = [];
-  }
-
-  nextTick(() => {
-    const textarea = document.getElementById(`edit-post-${post.id}`) as HTMLTextAreaElement;
-    textarea?.focus();
-  });
-};
-
-const saveEditPost = async (post: Post) => {
-  if (!editingPostId.value) return;
-  const finalAttachments = [...(post.attachments || []), ...pendingAttachments.value];
-  
-    // If it was a poll, update poll question and options text
-    const isPollDirty = post.poll && JSON.stringify(editPollOptions.value) !== JSON.stringify(post.poll.options.map(o => ({ id: o.id, text: o.text })));
-    
-    if (editContent.value !== post.content || editPostTitle.value !== (post.title || '') || editPostColor.value !== (post.color || '#ffffff') || pendingAttachments.value.length > 0 || isPollDirty) {
-      const updateData: Partial<Post> = { 
-        title: editPostTitle.value.trim(),
-        content: editContent.value,
-        color: editPostColor.value,
-        attachments: finalAttachments
-      };
-
-      if (post.poll) {
-        updateData.poll = JSON.parse(JSON.stringify({
-          ...post.poll,
-          question: editPostTitle.value.trim(),
-          options: post.poll.options.map((opt, i) => {
-              const edited = editPollOptions.value[i]; 
-              return {
-                  ...opt,
-                  text: edited ? edited.text : opt.text
-              };
-          })
-        }));
-      }
-
-      await boardStore.updatePost(boardId.value, post.id, updateData);
-      modal.success('貼文已更新');
-    }
-  editingPostId.value = null;
-  pendingAttachments.value = [];
-};
-
-const deleteAttachment = async (post: Post, index: number) => {
-    const confirmed = await modal.confirm('確定要移除此附件嗎？', '移除附件', 'error');
-    if (!confirmed) return;
-    
-    // Delete from Cloudinary
-    const att = post.attachments![index];
-    await deleteFile(att.publicId, att.deleteToken, att.resourceType);
-    
-    const newAttachments = [...(post.attachments || [])];
-    newAttachments.splice(index, 1);
-    
-    await boardStore.updatePost(boardId.value, post.id, { attachments: newAttachments });
-};
-
-const removePendingAttachment = async (index: number) => {
-    const att = pendingAttachments.value[index];
-    if (att && att.publicId) {
-        // True delete from Cloudinary immediately
-        await deleteFile(att.publicId, att.deleteToken, att.resourceType);
-    }
-    pendingAttachments.value.splice(index, 1);
-};
-
-const cancelEditPost = async () => {
-  if (editingPostId.value) {
-    const originalPost = allFlatPosts.value.find(p => p.id === editingPostId.value);
-    if (originalPost) {
-       const isDirty = 
-         editContent.value !== originalPost.content || 
-         editPostTitle.value !== (originalPost.title || '') ||
-         editPostColor.value !== (originalPost.color || '#ffffff') || 
-         pendingAttachments.value.length > 0;
-
-       if (isDirty) {
-          const confirmed = await modal.confirm('你有未儲存的變更，確定要捨棄嗎？', '捨棄變更', 'warning');
-          if (!confirmed) return;
-       }
-    }
-  }
-
-  // If there are pending new attachments, delete them from Cloudinary before cancelling
-  if (pendingAttachments.value.length > 0) {
-      for (const att of pendingAttachments.value) {
-          await deleteFile(att.publicId, att.deleteToken, att.resourceType);
-      }
-  }
-  editingPostId.value = null;
-  editPostTitle.value = '';
-  editContent.value = '';
-  editPostColor.value = '#ffffff';
-  pendingAttachments.value = [];
-};
-
-
-const startEditSection = (section: Section) => {
-  // Check if owner (simplified check for now, ideally check board owner)
-  editingSectionId.value = section.id;
-  editTitle.value = section.title;
-  nextTick(() => {
-    const input = document.getElementById(`edit-section-${section.id}`) as HTMLInputElement;
-    input?.focus();
-  });
-};
-
-const saveEditSection = async (section: Section) => {
-  if (!editingSectionId.value) return;
-  if (editTitle.value !== section.title && editTitle.value.trim()) {
-    // Update section title in Firestore directly (since we don't have updateSection in store yet)
-    await updateDoc(doc(db, `${DB_PREFIX}boards`, boardId.value, 'sections', section.id), {
-       title: editTitle.value.trim() 
-    });
-  }
-  editingSectionId.value = null;
-};
-
-const handleDeleteSection = async (sectionId: string) => {
-    const confirmed = await modal.confirm('確定要刪除此區段嗎？區段內的貼文也會一併刪除。', '刪除區段', 'error');
-    if (confirmed) {
-        await boardStore.deleteSection(boardId.value, sectionId);
-        modal.success('區段已刪除');
-    }
-};
-
-const startEditBoardTitle = () => {
-  if (currentBoard.value?.ownerId !== authStore.user?.uid) return;
-  editingBoardTitle.value = true;
-  editTitle.value = currentBoard.value?.title || '';
-  nextTick(() => {
-    document.getElementById('edit-board-title')?.focus();
-  });
-};
-
-const saveEditBoardTitle = async () => {
-  if (!editingBoardTitle.value || !currentBoard.value) return;
-  if (editTitle.value !== currentBoard.value.title && editTitle.value.trim()) {
-    currentBoard.value.title = editTitle.value.trim();
-    await updateDoc(doc(db, `${DB_PREFIX}boards`, boardId.value), { title: editTitle.value.trim() });
-  }
-  editingBoardTitle.value = false;
-};
-
-const startEditBoardDesc = () => {
-    if (currentBoard.value?.ownerId !== authStore.user?.uid) return;
-    editingBoardDesc.value = true;
-    editDesc.value = currentBoard.value?.description || '';
-    nextTick(() => {
-        document.getElementById('edit-board-desc')?.focus();
-    });
-};
-
-const saveEditBoardDesc = async () => {
-    if (!editingBoardDesc.value || !currentBoard.value) return;
-    if (editDesc.value !== currentBoard.value.description) {
-        currentBoard.value.description = editDesc.value.trim();
-        await updateDoc(doc(db, `${DB_PREFIX}boards`, boardId.value), { description: editDesc.value.trim() });
-    }
-    editingBoardDesc.value = false;
-};
-
-
-const goHome = () => {
-  router.push('/');
-};
-
-// Handle file selection
-const handleFileSelect = async (event: Event) => {
-  const input = event.target as HTMLInputElement;
-  if (!input.files?.length) return;
-
-  const file = input.files[0];
-
-  try {
-    const folderName = `ahmo-wall/${currentBoard.value?.title || 'Shared'}`;
-    const result = await uploadFile(file, folderName);
-    if (result) {
-        const fileType = file.type;
-        const type = fileType.startsWith('image/') ? 'image' : 
-                     fileType.startsWith('video/') ? 'video' : 
-                     fileType.startsWith('audio/') ? 'audio' :
-                     fileType === 'application/pdf' ? 'pdf' : 'link';
-
-        const attachmentData = JSON.parse(JSON.stringify({
-            type,
-            url: result.url,
-            publicId: result.publicId,
-            resourceType: result.resourceType,
-            deleteToken: result.deleteToken,
-            name: result.name,
-            thumbnailUrl: result.thumbnailUrl,
-            format: result.format
-        }));
-        
-        pendingAttachments.value.push(attachmentData);
-    }
-  } catch (err: any) {
-    console.error('Upload failed:', err);
-    modal.error('上傳失敗：' + (err.message || '未知錯誤'));
-  }
-  
-  // Clear input
-  input.value = '';
-};
-
-// Parse YouTube URL
-const parseYouTubeUrl = (url: string): string | null => {
-  const regex = /(?:youtube\.com\/(?:watch\?v=|embed\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
-  const match = url.match(regex);
-  return match ? match[1] : null;
-};
-
-// Add YouTube link
-const showYouTubeInput = ref(false);
-const youtubeUrlInput = ref('');
-const addYouTubeLink = () => {
-  showYouTubeInput.value = true;
-  youtubeUrlInput.value = '';
 };
 
 const confirmAddYouTube = () => {
-  if (!youtubeUrlInput.value) return;
-  const videoId = parseYouTubeUrl(youtubeUrlInput.value);
-  if (!videoId) {
-    modal.error('無效的 YouTube 網址');
-    return;
-  }
-  const attachmentData = JSON.parse(JSON.stringify({
-    type: 'youtube',
-    shareUrl: `https://www.youtube.com/embed/${videoId}`,
-    thumbnailUrl: `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`,
-    name: 'YouTube 影片'
-  }));
-  pendingAttachments.value.push(attachmentData);
-  showYouTubeInput.value = false;
-};
-
-
-
-const handleWallReorder = async () => {
-    if (!isOwner.value || currentSort.value !== 'manual') return;
-    
-    try {
-        const orderedIds = localWallPosts.value.map(p => p.id);
-        const updates = orderedIds.map((id, index) => 
-            updateDoc(doc(db, `${DB_PREFIX}boards`, boardId.value, 'posts', id), {
-                order: index
-            })
-        );
-        await Promise.all(updates);
-    } catch (err: any) {
-        console.error('Wall reorder failed:', err);
-        modal.error('排序儲存失敗：' + (err.message || '未知錯誤'));
+    if (!youtubeUrlInput.value.trim()) { showYouTubeInput.value = false; return; }
+    const url = youtubeUrlInput.value.trim();
+    let videoId = '';
+    const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+    const match = url.match(regExp);
+    if (match && match[2].length === 11) {
+        videoId = match[2];
+        const shareUrl = `https://www.youtube.com/embed/${videoId}`;
+        const attachment = {
+            type: 'youtube',
+            url: url,
+            shareUrl: shareUrl,
+            name: 'YouTube Video'
+        };
+        pendingAttachments.value.push(attachment);
+    } else {
+        modal.error('無效的 YouTube 連結');
     }
+    youtubeUrlInput.value = '';
+    showYouTubeInput.value = false;
 };
 
-// Submit post
-// Submit post
-const submitPost = async (sectionId: string) => {
-  console.log('[Dashboard] submitting post, isPoll:', isPoll.value, 'sectionId:', sectionId);
-  if (!newPostContent.value && pendingAttachments.value.length === 0 && !isPoll.value) return;
-  
-  if (isPoll.value) {
-     const validOptions = pollOptions.value.filter(o => o.text.trim() !== '');
-     if (validOptions.length < 2) {
-       modal.error('投票至少需要兩個選項');
-       return;
-     }
-
-     requireGuestName(async () => {
-        await boardStore.createPost(boardId.value, {
-          sectionId,
-          title: newPostTitle.value || '投票', // Default title for poll
-          content: newPostContent.value,
-          attachments: pendingAttachments.value,
-          color: newPostColor.value,
-          likes: 0,
-          poll: {
-             question: newPostTitle.value || '投票',
-             options: validOptions.map(o => ({ id: o.id, text: o.text, voters: [] })),
-             allowMultiple: false,
-             totalVotes: 0
-          }
-        }, guestName.value);
-        
-        // Reset
-        newPostContent.value = '';
-        newPostTitle.value = '';
-        newPostColor.value = '#ffffff';
-        pendingAttachments.value = [];
-        activeSection.value = null;
-        isPoll.value = false;
-        pollOptions.value = [{ id: '1', text: '' }, { id: '2', text: '' }];
-     });
-     return;
-  }
-
-  requireGuestName(async () => {
-      await boardStore.createPost(boardId.value, {
-        sectionId,
-        title: newPostTitle.value,
-        content: newPostContent.value,
-        attachments: pendingAttachments.value,
-        color: newPostColor.value,
-        likes: 0
-      }, guestName.value);
-      
-      newPostContent.value = '';
-      newPostTitle.value = '';
-      newPostColor.value = '#ffffff';
-      pendingAttachments.value = [];
-      activeSection.value = null;
-  });
-};
-
-// Create new section (Padlet-style inline creation)
-const isAddingSection = ref(false);
-const newSectionName = ref('');
-const newSectionInput = ref<HTMLInputElement | null>(null);
-const createSection = () => {
-    isAddingSection.value = true;
-    newSectionName.value = '';
-    nextTick(() => {
-        newSectionInput.value?.focus();
-    });
-};
-
-const cancelAddingSection = () => {
-    isAddingSection.value = false;
-    newSectionName.value = '';
-};
-
-const confirmCreateSection = async () => {
-    const title = newSectionName.value.trim();
-    if (!title) {
-        isAddingSection.value = false;
-        return;
-    }
-    
-    try {
-        await boardStore.createSection(boardId.value, title);
-        isAddingSection.value = false;
-        newSectionName.value = '';
-    } catch (e: any) {
-        console.error('Failed to create section:', e);
-        modal.error('建立區段失敗：' + e.message);
-    }
-};
-
-
-
-// openAddPost removed as it was unused
-
-
-// Like post
-// Like post
-const handleLike = async (post: Post) => {
-  if (isLiked(post.id)) return;
-  
-  // Create temp state for immediate feedback? 
-  // No, let's wait for server but handle error
-  try {
-      await boardStore.likePost(boardId.value, post.id, (post.likes || 0) + 1);
-      localStorage.setItem(`ahmo_liked_${post.id}`, 'true');
-      likedPosts[post.id] = true;
-  } catch (err: any) {
-      console.error('Like failed:', err);
-      if (err.code === 'permission-denied') {
-          modal.error('權限不足：訪客可能無法對此看板按讚，請檢查規則設定。');
-      }
-  }
-};
-
-// Delete post
-const handleDelete = async (post: Post) => {
-  const confirmed = await modal.confirm('確定要刪除這則貼文嗎？', '刪除貼文', 'error');
-  if (!confirmed) return;
-
-  // Delete all Cloudinary attachments
-  if (post.attachments?.length) {
-    for (const att of post.attachments) {
-        // 使用新版 deleteFile，優先嘗試永久刪除
-        await deleteFile(att.publicId, att.deleteToken, att.resourceType);
-    }
-  }
-
-  await boardStore.deletePost(boardId.value, post.id);
-};
-
-// Handle Comments
-const toggleComments = (post: Post) => {
-  if (activeCommentPostId.value === post.id) {
-    activeCommentPostId.value = null;
-  } else {
-    activeCommentPostId.value = post.id;
-  }
-};
-
-const submitComment = async (post: Post) => {
-  const content = commentInputs[post.id];
-  if (!content?.trim()) return;
-
-  requireGuestName(async () => {
-      await boardStore.addComment(boardId.value, post.id, content, guestName.value);
-      commentInputs[post.id] = '';
-      // 自動展開留言區
-      expandedComments[post.id] = true;
-  });
-};
-
-const handleDeleteComment = async (post: Post, commentId: string) => {
-  const confirmed = await modal.confirm('確定要刪除這則留言嗎？', '刪除留言', 'error');
-  if (!confirmed) return;
-  await boardStore.deleteComment(boardId.value, post.id, commentId);
-};
-
-
-
-
-
-
-const handleApprovePost = async (postId: string) => {
-    await boardStore.approvePost(boardId.value, postId);
-    modal.success('貼文已核准');
-};
-
-// Poll Logic
-const isPoll = ref(false);
-const pollOptions = ref([{ id: '1', text: '' }, { id: '2', text: '' }]);
-const editPollOptions = ref<{ id: string; text: string }[]>([]);
-
-const addPollOption = () => {
-  pollOptions.value.push({ id: Date.now().toString(), text: '' });
-};
-
-const removePollOption = (index: number) => {
-  if (pollOptions.value.length > 2) {
-    pollOptions.value.splice(index, 1);
-  }
-};
-
-const handleVote = async (post: Post, optionId: string) => {
-  // Check permission (Owner, Guest Name, or Login)
-  if (!authStore.user && !guestName.value) {
-      requireGuestName(() => handleVote(post, optionId));
-      return;
-  }
-
-  const userId = authStore.user?.uid || (guestName.value ? 'guest:' + guestName.value : 'anonymous');
-  
-  try {
-    await boardStore.votePoll(boardId.value, post.id, optionId, userId);
-  } catch (err: any) {
-    console.error('Voting failed:', err);
-    modal.error('投票失敗：' + err.message);
-  }
-};
-
-const handleApproveComment = async (postId: string, commentId: string) => {
-    await boardStore.approveComment(boardId.value, postId, commentId);
-    modal.success('留言已核准');
-};
-
-
-
-// Delete Board
 const deleteBoard = async () => {
-  const confirmed = await modal.confirm('警告：此動作無法復原！確定要刪除整個看板以及所有貼文與雲端附件嗎？', '刪除看板', 'error');
-  if (!confirmed) return;
-  
-  try {
-    // 1. 只有管理員能執行雲端清理，因為管理員才有 Secret
-    if (authStore.user) {
-        // 抓取所有貼文以利清理附件
-        const { getDocs, collectionGroup, query, where } = await import('firebase/firestore');
-        // 注意：這裡直接抓取看板下的所有貼文。
-        // 為簡單起見，我們利用 boardStore 已經有的貼文數據
-        const allPosts = boardStore.posts || [];
-        
-        for (const post of allPosts) {
-            if (post.attachments?.length) {
-                for (const att of post.attachments) {
-                    // 這會使用 admin secret 刪除雲端檔案
-                    await deleteFile(att.publicId, att.deleteToken, att.resourceType);
-                }
-            }
+    const confirmed = await modal.confirm('您確定要永久刪除此看板嗎？此操作不可復原。');
+    if (!confirmed) return;
+    try {
+        await deleteDoc(doc(db, `${DB_PREFIX}boards`, boardId.value));
+        modal.success('看板已刪除');
+        router.push('/');
+    } catch (err) {
+        modal.error('刪除失敗');
+    }
+};
+
+const updateWhitelist = () => {
+    appConfig.allowedEmails = whitelistInput.value.split(',').map(e => e.trim()).filter(e => e);
+};
+
+const currentUrl = computed(() => window.location.href);
+
+const submitPassword = verifyPassword;
+
+const handleFileSelect = async (e: Event) => {
+    const files = (e.target as HTMLInputElement).files;
+    if (!files?.length) return;
+    const sectionId = activeSection.value || (localSections.value[0]?.id);
+    if (!sectionId) return;
+    
+    for (let i = 0; i < files.length; i++) {
+        const res = await uploadFile(files[i], `ahmo-wall/${currentBoard.value?.title || 'Shared'}`);
+        if (res) {
+            pendingAttachments.value.push({
+                type: files[i].type.startsWith('image/') ? 'image' : 
+                      files[i].type.startsWith('video/') ? 'video' :
+                      files[i].type === 'application/pdf' ? 'pdf' : 'link',
+                url: res.url,
+                publicId: res.publicId,
+                name: files[i].name,
+                thumbnailUrl: res.thumbnailUrl
+            });
         }
     }
-
-    // 2. 刪除看板與子集合 (子集合刪除建議由後端處理，但前端可以用遞迴)
-    await boardStore.deleteBoard(boardId.value);
-    
-    modal.success('看板及其附件已完整清理');
-    router.push('/');
-  } catch (err: any) {
-    console.error('Failed to delete board:', err);
-    modal.error('刪除看板失敗：' + err.message);
-  }
+    (e.target as HTMLInputElement).value = '';
 };
 
-// Utility for relative time
-const formatRelativeTime = (date: Date) => {
-  if (!date) return '剛剛';
-  const now = new Date();
-  const diff = now.getTime() - date.getTime();
-  
-  if (diff < 30000) return '剛剛'; // Within 30 seconds
-  if (diff < 3600000) return `${Math.floor(diff / 60000)} 分鐘前`; // Within 1 hour
-  if (diff < 86400000) return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); // Same day
-  return date.toLocaleDateString(); // Older
-};
+const saveGuestName = confirmGuestName;
+const fileInput = ref<HTMLInputElement | null>(null);
+const cameraInput = ref<HTMLInputElement | null>(null);
+
+// 7. Lifecycle & Watchers
+onMounted(async () => {
+    loadBoard();
+    boardSettings.loadGlobalSettings();
+});
+
+onUnmounted(() => { boardStore.cleanup(); });
+
+watch(() => route.params.id, (newId) => {
+    if (newId) {
+        loadBoard();
+    }
+}, { immediate: true });
 </script>
 
 <template>
@@ -1727,104 +748,32 @@ const formatRelativeTime = (date: Date) => {
       <div class="absolute inset-0 bg-slate-950/20 pointer-events-none z-0"></div>
 
       <!-- Header -->
-      <header class="bg-slate-900/60 backdrop-blur-3xl border-b border-white/10 px-6 py-3.5 flex justify-between items-center z-40 sticky top-0 shadow-2xl transition-all duration-300">
-        <div class="flex items-center gap-4">
-          <!-- Title -->
-          <button @click="goHome" class="w-10 h-10 flex items-center justify-center rounded-xl bg-white/5 hover:bg-white/10 text-white/80 hover:text-white transition-all border border-white/5 hover:border-white/20 active:scale-95 group">
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="group-hover:-translate-x-0.5 transition-transform"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-          </button>
-          
-          <div class="flex-1 min-w-0">
-            <!-- Editable Title -->
-            <input v-if="editingBoardTitle && isOwner"
-                   id="edit-board-title"
-                   v-model="editTitle"
-                   @blur="saveEditBoardTitle"
-                   @keydown.enter="saveEditBoardTitle"
-                   class="bg-transparent border-b-2 border-emerald-500 text-xl font-black text-white tracking-tight w-full outline-none py-1 transition-all"
-            />
-            <h1 v-else @dblclick="isOwner && startEditBoardTitle()" 
-                :class="['text-xl font-black text-white tracking-tight rounded-lg px-2 -ml-2 transition-all duration-300 flex items-center gap-2', isOwner ? 'cursor-pointer hover:bg-white/10 hover:shadow-lg' : 'cursor-default']">
-                {{ currentBoard?.title || '阿墨雲牆' }}
-                <svg v-if="isOwner" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="opacity-0 group-hover:opacity-40"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
-            </h1>
-
-            <!-- Editable Description -->
-            <input v-if="editingBoardDesc && isOwner"
-                   id="edit-board-desc"
-                   v-model="editDesc"
-                   @blur="saveEditBoardDesc"
-                   @keydown.enter="saveEditBoardDesc"
-                   class="bg-transparent border-b border-emerald-400/50 text-xs text-slate-300 w-full outline-none opacity-80"
-            />
-            <p v-else @dblclick="isOwner && startEditBoardDesc()" 
-               :class="['text-xs text-slate-400 font-bold tracking-tight rounded px-2 -ml-2 transition-all min-h-[1rem] line-clamp-1 opacity-80', isOwner ? 'cursor-pointer hover:bg-white/5' : 'cursor-default']">
-               {{ currentBoard?.description || (isOwner ? '✨ 點兩下新增專屬描述...' : '') }}
-            </p>
-          </div>
-
-          <!-- Permission Badge (For Guests) -->
-          <div v-if="!isOwner && currentBoard" class="ml-2 flex items-center gap-2">
-            <div v-if="canContribute" class="flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/10 text-emerald-400 rounded-full border border-emerald-500/20 shadow-sm animate-pulse-slow">
-              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-              <span class="text-[10px] font-black uppercase tracking-widest">可編輯</span>
-            </div>
-            <div v-else class="flex items-center gap-1.5 px-2.5 py-1 bg-amber-500/10 text-amber-500 rounded-full border border-amber-500/20 shadow-sm">
-              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0z"/><circle cx="12" cy="12" r="3"/></svg>
-              <span class="text-[10px] font-black uppercase tracking-widest">唯讀模式</span>
-            </div>
-          </div>
-        </div>
-        
-        <div class="flex items-center gap-4">
-          <!-- Sort Dropdown (Admin Only) -->
-          <div v-if="isOwner" class="relative group/sort">
-            <select v-model="currentSort" 
-                    class="appearance-none bg-white/5 hover:bg-white/10 text-slate-200 pl-4 pr-10 py-2.5 rounded-2xl text-sm font-bold outline-none border border-white/5 focus:border-emerald-500 transition-all cursor-pointer shadow-lg backdrop-blur-md">
-                <option v-for="opt in sortOptions" :key="opt.value" :value="opt.value" class="text-slate-900 bg-white">
-                    {{ opt.label }}
-                </option>
-            </select>
-            <div class="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 group-hover/sort:text-emerald-400 transition-colors">
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
-            </div>
-          </div>
-
-          <button v-if="isOwner && pendingCount > 0" 
-                  @click="handleBatchApprove" 
-                  class="bg-amber-500/90 hover:bg-amber-500 text-white px-5 py-2.5 rounded-2xl text-[11px] font-black transition-all flex items-center gap-2 shadow-[0_8px_20px_rgba(245,158,11,0.3)] border border-white/10 active:scale-95 group/batch">
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="group-hover/batch:rotate-12 transition-transform"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-            核准 ({{ pendingCount }})
-          </button>
-          
-          <button v-if="isOwner" @click="openShareModal" class="bg-emerald-600/90 hover:bg-emerald-500 text-white px-4 py-2 rounded-xl text-[10px] font-black transition-all flex items-center gap-2 shadow-lg shadow-emerald-500/20 border border-white/10 active:scale-95">
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-            分享
-          </button>
-
-          <button v-if="localSections.length > 0" @click="startSlideshow" class="bg-indigo-600/90 hover:bg-indigo-500 text-white px-4 py-2 rounded-xl text-[10px] font-black transition-all flex items-center gap-2 shadow-lg shadow-indigo-500/20 border border-white/10 active:scale-95 ml-2">
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z"/></svg>
-            播放
-          </button>
-
-          <button v-if="isOwner" @click="showSettingsModal = true" class="w-9 h-9 bg-white/5 hover:bg-white/10 rounded-xl flex items-center justify-center text-white border border-white/10 hover:border-emerald-500/50 transition-all active:scale-95 group shadow-lg">
-            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="group-hover:rotate-90 transition-transform duration-500"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
-          </button>
-
-          <div v-if="authStore.user?.photoURL" class="relative group/avatar">
-            <img :src="authStore.user.photoURL" referrerpolicy="no-referrer" class="w-10 h-10 rounded-2xl border-2 border-emerald-500/30 shadow-lg cursor-pointer transition-transform hover:scale-110 active:scale-95" />
-            <div class="absolute -bottom-1 -right-1 w-3.5 h-3.5 bg-emerald-500 border-2 border-slate-900 rounded-full shadow-emerald-500/50 shadow-sm"></div>
-          </div>
-          <div v-else-if="!authStore.user" class="text-[11px] font-black tracking-widest uppercase text-slate-400 bg-white/5 border border-white/5 px-4 py-2 rounded-2xl flex items-center gap-3 shadow-lg">
-             <div class="w-1.5 h-1.5 bg-slate-500 rounded-full animate-pulse"></div>
-             <span v-if="guestName" class="text-white">{{ guestName }}</span>
-             <span v-else>訪客</span>
-             <button v-if="guestName" @click="clearGuestName" class="hover:text-rose-500 transition-colors bg-white/5 rounded p-0.5">
-               <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-             </button>
-          </div>
-        </div>
-      </header>
+      <BoardHeader 
+        :current-board="currentBoard"
+        :current-user="authStore.user"
+        :is-owner="isOwner"
+        :can-contribute="canContribute"
+        :pending-count="pendingCount"
+        :current-sort="currentSort"
+        :sort-options="sortOptions"
+        :editing-board-title="editingBoardTitle"
+        :editing-board-desc="editingBoardDesc"
+        :edit-title="editTitle"
+        :edit-desc="editDesc"
+        @go-home="goHome"
+        @open-share-modal="openShareModal"
+        @open-settings-modal="showSettingsModal = true"
+        @handle-batch-approve="postActions.handleBatchApprove(pendingCount, boardStore.posts)"
+        @create-section="createSection"
+        @start-slideshow="slideshow.startSlideshow"
+        @update-sort="handleSortUpdate"
+        @start-edit-title="startEditBoardTitle"
+        @save-edit-title="saveEditBoardTitle"
+        @update-title="editTitle = $event"
+        @start-edit-desc="startEditBoardDesc"
+        @save-edit-desc="saveEditBoardDesc"
+        @update-desc="editDesc = $event"
+      />
       
       <!-- Access Denied UI -->
       <Teleport to="body">
@@ -1886,6 +835,8 @@ const formatRelativeTime = (date: Date) => {
            class="flex gap-6 items-start h-full"
            handle=".section-drag-handle"
            :disabled="!isOwner"
+           @start="isInternalDragging = true"
+           @end="isInternalDragging = false"
            @change="(evt: any) => {
              if (evt.moved) {
                boardStore.reorderSections(boardId, localSections.map(s => s.id));
@@ -1957,7 +908,7 @@ const formatRelativeTime = (date: Date) => {
                          type="text" 
                          :placeholder="isPoll ? '投票問題...' : '標題 (選填)...'" 
                          :id="`input-${section.id}`"
-                         class="w-full text-sm font-bold text-gray-800 placeholder-gray-400 bg-transparent outline-none mb-2"
+                          class="w-full text-sm font-black text-slate-900 placeholder-slate-400 bg-transparent outline-none mb-2"
                          @keydown.enter.prevent="contentRefs[section.id]?.focus()">
                   
 
@@ -1991,7 +942,7 @@ const formatRelativeTime = (date: Date) => {
                             :ref="(el) => { if(el) contentRefs[section.id] = el as HTMLTextAreaElement }"
                             :style="{ backgroundColor: newPostColor !== '#ffffff' ? newPostColor : '#ffffff' }"
                             :placeholder="isPoll ? '補充說明 (選填)...' : '輸入內容...'" 
-                            class="w-full text-sm text-slate-900 font-medium placeholder-slate-500 bg-transparent outline-none resize-none h-20 mb-2"
+                            class="w-full text-sm text-slate-900 font-bold placeholder-slate-500 bg-transparent outline-none resize-none h-20 mb-2"
                             @keydown.ctrl.enter="submitPost(section.id)"></textarea>
                   
                   <!-- Attachments Preview -->
@@ -2049,16 +1000,17 @@ const formatRelativeTime = (date: Date) => {
                   :fallback-tolerance="15"
                   :animation="150"
                   :scroll-sensitivity="100"
-                  ghost-class="opacity-0"
+                   ghost-class="opacity-50"
+                  @start="isInternalDragging = true"
+                  @end="isInternalDragging = false"
                   @change="(evt: any) => {
                     if (evt.added || evt.moved) {
-                       boardStore.reorderPosts(boardId, section.id, (localPostsBySection[section.id] || []).map(p => p.id));
+                       boardStore.reorderPosts(boardId, section.id, (localPostsBySection[section.id] || []).map((p: Post) => p.id));
                     }
                   }"
                 >
                   <template #item="{ element: post }">
-                    <div class="rounded-[2rem] p-5 shadow-lg border border-white/5 hover:shadow-2xl hover:border-white/10 transition-all duration-500 group relative h-fit hover:-translate-y-1 active:scale-[0.98] outline-none cursor-pointer will-change-transform"
-                         style="content-visibility: auto; contain-intrinsic-size: 100px 300px;"
+                    <div class="ahmo-post-card rounded-[2rem] p-5 shadow-lg border border-white/5 hover:shadow-2xl hover:border-white/10 transition-all duration-500 group relative h-fit hover:-translate-y-1 active:scale-[0.98] outline-none cursor-pointer will-change-transform select-none"
                          :class="{ 'ring-4 ring-emerald-500 ring-inset': dragTargetPostId === post.id }"
                          :style="{ backgroundColor: post.color || 'rgba(255,255,255,0.95)' }"
                          @dragover="handlePostDragOver(post.id, $event)"
@@ -2122,8 +1074,9 @@ const formatRelativeTime = (date: Date) => {
                          </div>
                        </div>
 
-                       <!-- Post Title -->
-                       <h4 v-if="post.title && editingPostId !== post.id" class="font-black text-slate-800 mb-2 truncate text-sm tracking-tight leading-tight" @click="openPostDetail(post)">{{ post.title }}</h4>
+                       <h4 v-if="post.title && editingPostId !== post.id" 
+                           class="font-black text-slate-800 mb-2 truncate text-sm tracking-tight leading-tight select-none" 
+                           @click="openPostDetail(post)">{{ post.title }}</h4>
 
                        <!-- Poll Display -->
                        <div v-if="post.poll" class="mb-4 w-full bg-black/5 rounded-xl p-3 border border-black/5">
@@ -2227,12 +1180,12 @@ const formatRelativeTime = (date: Date) => {
                               </div>
                             </div>
                         </div>
-                        <div v-else-if="post.content" class="mb-3">
-                           <div class="text-gray-700 text-sm leading-relaxed whitespace-pre-wrap transition-all overflow-hidden cursor-pointer"
-                                :class="{'line-clamp-6': !expandedPostsInList[post.id] && post.content.length > 350}"
-                                @click="openPostDetail(post)"
-                                v-html="formatContent(post.content)">
-                           </div>
+                         <div v-else-if="post.content" class="mb-3 select-none">
+                            <div class="text-gray-700 text-sm leading-relaxed whitespace-pre-wrap transition-all overflow-hidden cursor-pointer select-none"
+                                 :class="{'line-clamp-6': !expandedPostsInList[post.id] && post.content.length > 350}"
+                                 @click="openPostDetail(post)"
+                                 v-html="formatContent(post.content)">
+                            </div>
                            <button v-if="post.content.length > 350" 
                                    @click.stop="expandedPostsInList[post.id] = !expandedPostsInList[post.id]"
                                    class="text-emerald-600 hover:text-emerald-700 text-[10px] font-black mt-2 uppercase tracking-widest flex items-center gap-1.5 bg-emerald-50 px-2 py-1 rounded-lg transition-colors">
@@ -2395,12 +1348,12 @@ const formatRelativeTime = (date: Date) => {
                         </div>
                         <div v-if="canContribute" class="flex items-center gap-3">
                             <div class="flex items-center gap-2 flex-1">
-                                <input v-model="commentInputs[post.id]" 
-                                       @keydown.enter="submitComment(post)"
-                                       @click.stop
-                                       type="text" 
-                                       placeholder="寫下留言..." 
-                                       class="flex-1 bg-gray-100 rounded-full px-3 py-1.5 text-xs text-slate-900 outline-none focus:bg-white border border-transparent focus:border-emerald-500 transition-colors">
+                                 <input v-model="commentInputs[post.id]" 
+                                        @keydown.enter="submitComment(post)"
+                                        @click.stop
+                                        type="text" 
+                                        placeholder="寫下留言..." 
+                                        class="flex-1 bg-white rounded-full px-4 py-1.5 text-xs text-slate-900 font-black outline-none border border-slate-200 focus:border-emerald-500 transition-all shadow-sm">
                                 <button @click.stop="submitComment(post)" class="text-emerald-600 hover:text-emerald-700 font-bold text-xs">發佈</button>
                             </div>
                         </div>
@@ -2594,8 +1547,17 @@ const formatRelativeTime = (date: Date) => {
                     v-model="localPostsBySection[section.id]"
                     group="posts"
                     item-key="id"
-                    class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 min-h-[100px] mb-12"
+                    class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 min-h-[100px] mb-12 items-start"
                     :disabled="currentSort !== 'manual' || !isOwner"
+                    :delay="300"
+                    :delay-on-touch-only="true"
+                    :touch-start-threshold="15"
+                    :force-fallback="true"
+                    :fallback-tolerance="15"
+                    :animation="150"
+                    :scroll-sensitivity="100"
+                    @start="isInternalDragging = true"
+                    @end="isInternalDragging = false"
                     @change="(evt: any) => {
                       if (evt.added || evt.moved) {
                          boardStore.reorderPosts(boardId, section.id, (localPostsBySection[section.id] || []).map(p => p.id));
@@ -2603,8 +1565,7 @@ const formatRelativeTime = (date: Date) => {
                     }"
                   >
                  <template #item="{ element: post }">
-                   <div class="bg-white/98 rounded-[2.5rem] p-6 shadow-2xl border border-white/20 transition-all duration-500 group relative hover:-translate-y-2 hover:shadow-[0_32px_64px_-16px_rgba(0,0,0,0.3)] cursor-pointer will-change-transform"
-                 style="content-visibility: auto; contain-intrinsic-size: 100px 400px;"
+                   <div class="ahmo-post-card bg-white/98 rounded-[2.5rem] p-6 shadow-2xl border border-white/20 transition-all duration-500 group relative hover:-translate-y-2 hover:shadow-[0_32px_64px_-16px_rgba(0,0,0,0.3)] cursor-pointer will-change-transform select-none h-fit"
                  :class="{ 'ring-4 ring-emerald-500 ring-inset': dragTargetPostId === post.id }"
                  :style="{ backgroundColor: post.color || '#ffffff' }"
                  @dragover="handlePostDragOver(post.id, $event)"
@@ -2658,13 +1619,12 @@ const formatRelativeTime = (date: Date) => {
                     {{ post.author.displayName?.charAt(0) || '?' }}
                   </div>
                   <div>
-                    <p class="font-bold text-sm text-gray-800">{{ post.author.displayName }}</p>
-                    <p class="text-[10px] text-gray-400">{{ formatRelativeTime(post.createdAt) }}</p>
+                    <p class="font-black text-sm text-slate-900">{{ post.author.displayName }}</p>
+                    <p class="text-[10px] text-slate-500 font-bold">{{ formatRelativeTime(post.createdAt) }}</p>
                   </div>
                 </div>
 
-                <!-- Post Title -->
-                <h4 v-if="post.title && editingPostId !== post.id" class="font-bold text-gray-800 mb-2 truncate">{{ post.title }}</h4>
+                <h4 v-if="post.title && editingPostId !== post.id" class="font-black text-slate-900 mb-2 truncate text-sm">{{ post.title }}</h4>
 
                 <!-- Poll Display -->
                 <div v-if="post.poll" class="mb-4 w-full bg-slate-50/80 rounded-xl p-3 border border-slate-100">
@@ -2700,8 +1660,8 @@ const formatRelativeTime = (date: Date) => {
                 <div v-if="editingPostId === post.id" class="mb-3">
                      <input v-model="editPostTitle"
                             type="text"
-                            placeholder="貼文標題 (選填)..."
-                            class="w-full text-sm text-slate-900 bg-transparent outline-none mb-2 border-b border-gray-200 focus:border-emerald-500 transition-colors placeholder-slate-400"
+                             placeholder="貼文標題 (選填)..."
+                             class="w-full text-sm text-slate-900 bg-transparent outline-none mb-2 border-b border-gray-200 focus:border-emerald-500 transition-colors placeholder-slate-500 font-bold"
                             @keydown.enter.prevent="focusElement(`edit-post-${post.id}`)">
                    <!-- Color Picker for Edit -->
                    <div class="flex gap-2 mb-2 overflow-x-auto pb-2 scrollbar-hide">
@@ -3351,273 +2311,156 @@ const formatRelativeTime = (date: Date) => {
           <!-- Right Content Area -->
           <div class="flex-1 space-y-8 text-white min-h-[400px]">
             <!-- Tab: Basic Info -->
-            <transition-group name="fade-slide" mode="out-in">
-              <div v-if="settingsTab === 'basic'" :key="'basic'" class="space-y-6">
-                <div>
-                  <label class="block text-xs font-black text-emerald-400 uppercase tracking-widest mb-3">看板標題</label>
-                  <input v-model="currentBoard!.title" 
-                         type="text" 
-                         placeholder="輸入看板名稱..."
-                         class="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-3.5 focus:outline-none focus:border-emerald-500 focus:bg-white/10 transition-all font-black text-lg">
-                </div>
-                <div>
-                  <label class="block text-xs font-black text-emerald-400 uppercase tracking-widest mb-3">看板描述</label>
-                  <textarea v-model="currentBoard!.description" 
-                            rows="4"
-                            placeholder="寫點什麼來介紹這個空間吧..."
-                            class="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-3.5 focus:outline-none focus:border-emerald-500 focus:bg-white/10 transition-all resize-none text-sm leading-relaxed"></textarea>
+            <transition name="fade-slide" mode="out-in">
+              <div v-if="settingsTab === 'basic'" :key="'basic'" class="space-y-4">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div class="space-y-3">
+                    <div>
+                      <label class="block text-[10px] font-black text-emerald-400 uppercase tracking-widest mb-1.5 px-1">看板標題與描述</label>
+                      <input v-model="currentBoard!.title" 
+                             type="text" 
+                             placeholder="輸入看板名稱..."
+                             class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 focus:outline-none focus:border-emerald-500 focus:bg-white/10 focus:text-white transition-all font-black text-base shadow-inner text-white">
+                    </div>
+                    <div>
+                      <textarea v-model="currentBoard!.description" 
+                                rows="2"
+                                placeholder="空間簡介 (選填)..."
+                                class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 focus:outline-none focus:border-emerald-500 focus:bg-white/10 focus:text-white transition-all resize-none text-xs leading-relaxed text-white"></textarea>
+                    </div>
+
+                    <div class="pt-2 border-t border-white/5">
+                      <label class="block text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2 px-1">訪客互動權限</label>
+                      <div class="bg-white/5 p-3 rounded-2xl border border-white/5 space-y-3">
+                        <div class="flex items-center justify-between">
+                          <span class="text-xs font-bold text-gray-300">寫作權限</span>
+                          <div class="flex bg-black/40 p-1 rounded-lg">
+                            <button v-for="p in [{id:'edit',l:'可新增'}, {id:'view',l:'唯讀'}]" :key="p.id"
+                                    @click="currentBoard!.guestPermission = p.id as any"
+                                    :class="['px-3 py-1 rounded-md text-[10px] font-black transition-all', currentBoard!.guestPermission === p.id ? 'bg-emerald-500 text-white shadow-md' : 'text-gray-500 hover:text-white']">
+                              {{ p.l }}
+                            </button>
+                          </div>
+                        </div>
+                        <div class="flex items-center justify-between cursor-pointer group/mod p-2 rounded-xl border border-white/5 hover:bg-white/5 transition-all" @click="currentBoard!.moderationEnabled = !currentBoard!.moderationEnabled">
+                          <div class="flex flex-col gap-1">
+                             <div class="flex items-center gap-2">
+                               <span class="text-sm font-black text-white">貼文需審核</span>
+                               <span :class="['text-[10px] font-bold px-1.5 py-0.5 rounded border', currentBoard!.moderationEnabled ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' : 'bg-gray-700/50 text-gray-400 border-gray-600/50']">
+                                 {{ currentBoard!.moderationEnabled ? '已啟用' : '已停用' }}
+                               </span>
+                             </div>
+                             <span class="text-[10px] text-gray-400/80 font-medium">開啟後，所有訪客貼文需經過您的批准才會公開顯示。</span>
+                          </div>
+                          
+                          <div :class="['w-12 h-7 flex items-center rounded-full p-1 cursor-pointer transition-all duration-300 shadow-inner border', currentBoard!.moderationEnabled ? 'bg-emerald-500 border-emerald-400' : 'bg-slate-700/50 border-white/10']">
+                             <div :class="['bg-white w-5 h-5 rounded-full shadow-lg transform duration-300 ease-in-out', currentBoard!.moderationEnabled ? 'translate-x-5' : 'translate-x-0']"></div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="space-y-3">
+                    <label class="block text-[10px] font-black text-emerald-400 uppercase tracking-widest mb-1.5 px-1">隱私安全性</label>
+                    <div class="grid gap-1.5">
+                      <label v-for="p in [
+                        { id: 'public', label: '完全公開 (所有人皆可見)', icon: 'M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2z', color: 'text-emerald-400' },
+                        { id: 'password', label: '密碼保護 (輸入密碼才可視)', icon: 'M19 11H5a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7a2 2 0 0 0-2-2zM7 11V7a5 5 0 0 1 10 0v4', color: 'text-blue-400' },
+                        { id: 'private', label: '私密看板 (僅限擁有者)', icon: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z', color: 'text-red-400' }
+                      ]" :key="p.id" 
+                             :class="['flex items-center gap-3 cursor-pointer p-3 rounded-xl border transition-all text-xs font-bold', 
+                                       currentBoard!.privacy === p.id ? 'border-emerald-500 bg-emerald-500/10' : 'border-white/5 bg-white/5 hover:border-white/10']">
+                        <input type="radio" v-model="currentBoard!.privacy" :value="p.id" class="sr-only">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" :class="p.color"><path :d="p.icon"/></svg>
+                        <span>{{ p.label }}</span>
+                      </label>
+                    </div>
+                    <div v-if="currentBoard!.privacy === 'password'" class="animate-scale-in">
+                      <input v-model="currentBoard!.password" 
+                             type="password" 
+                             placeholder="請輸入存取密碼..." 
+                             class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-sm focus:outline-none focus:border-emerald-500 font-mono tracking-widest">
+                    </div>
+                    
+                    <button @click="deleteBoard" class="mt-4 w-full flex items-center justify-between p-3 rounded-2xl border border-red-500/10 bg-red-500/5 hover:bg-red-500/10 transition-all group">
+                        <div class="flex items-center gap-3">
+                          <div class="w-8 h-8 rounded-lg bg-red-500/10 text-red-500 flex items-center justify-center">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                          </div>
+                          <span class="text-[11px] font-black text-red-500 uppercase tracking-wider">危險區域：刪除此看板</span>
+                        </div>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><path d="m9 18 6-6-6-6"/></svg>
+                    </button>
+                  </div>
                 </div>
               </div>
 
-              <!-- Tab: Visual & Background -->
-              <div v-if="settingsTab === 'visual'" :key="'visual'" class="space-y-8">
+              <div v-else-if="settingsTab === 'visual'" :key="'visual'" class="space-y-8">
                 <!-- Layout -->
                 <div>
-                  <label class="block text-xs font-black text-emerald-400 uppercase tracking-widest mb-4">版型排版</label>
-                  <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <label class="block text-[10px] font-black text-emerald-400 uppercase tracking-widest mb-4 px-1">版型排版</label>
+                  <div class="grid grid-cols-3 gap-3">
                     <div v-for="layout in [
-                      { id: 'shelf', label: '互動書架', icon: 'M3 3h8v18H3zM13 3h8v18h-8zM3 9h8M13 9h8' },
-                      { id: 'wall', label: '隨意牆面', icon: 'M3 3h18v18H3zM3 9h18M3 15h18M9 3v18M15 3v18' },
-                      { id: 'stream', label: '串流視窗', icon: 'M3 6h18M3 12h18M3 18h18' }
+                      { id: 'shelf', label: '書架', icon: 'M3 3h8v18H3zM13 3h8v18h-8zM3 9h8M13 9h8' },
+                      { id: 'wall', label: '牆面', icon: 'M3 3h18v18H3zM3 9h18M3 15h18M9 3v18M15 3v18' },
+                      { id: 'stream', label: '串流', icon: 'M3 6h18M3 12h18M3 18h18' }
                     ]" :key="layout.id"
                          @click="currentBoard!.layout = layout.id as any"
-                         :class="['p-4 rounded-[2rem] border-2 text-center cursor-pointer transition-all flex flex-col items-center gap-3 group', 
-                                   currentBoard?.layout === layout.id ? 'border-emerald-500 bg-emerald-500/10 text-white shadow-xl shadow-emerald-900/40' : 'border-white/5 text-gray-500 hover:border-white/20 hover:bg-white/5']">
-                      <div class="w-12 h-12 rounded-2xl bg-white/5 flex items-center justify-center group-hover:scale-110 transition-transform">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path :d="layout.icon"/></svg>
-                      </div>
-                      <span class="text-xs font-black tracking-tighter">{{ layout.label }}</span>
+                         :class="['p-3 rounded-2xl border-2 text-center cursor-pointer transition-all flex flex-col items-center gap-2 group', 
+                                   currentBoard?.layout === layout.id ? 'border-emerald-500 bg-emerald-500/10 text-white shadow-lg' : 'border-white/5 text-gray-500 hover:border-white/20 hover:bg-white/5']">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="group-hover:scale-110 transition-transform"><path :d="layout.icon"/></svg>
+                      <span class="text-[10px] font-black tracking-tight">{{ layout.label }}</span>
                     </div>
                   </div>
                 </div>
 
                 <!-- Background -->
                 <div>
-                  <label class="block text-xs font-black text-emerald-400 uppercase tracking-widest mb-4">視覺背景</label>
+                  <div class="flex items-center justify-between mb-4 px-1">
+                    <label class="text-[10px] font-black text-emerald-400 uppercase tracking-widest">視覺背景</label>
+                    <div class="flex gap-2">
+                       <input ref="backgroundFileInput" type="file" accept="image/*" class="hidden" @change="handleBackgroundUpload">
+                       <button @click="backgroundFileInput?.click()" class="text-[9px] font-black bg-white/5 hover:bg-white/10 px-3 py-1 rounded-full border border-white/10 transition-all text-white/50 hover:text-white">本地上傳</button>
+                    </div>
+                  </div>
                   
                   <div class="space-y-4">
                     <!-- Unsplash Search -->
-                    <div class="mb-6 bg-white/5 p-4 rounded-2xl border border-white/5">
-                      <div class="flex flex-col gap-3">
-                         <div class="flex justify-between items-center px-1">
-                            <h4 class="text-[10px] font-black text-gray-500 uppercase tracking-widest leading-none">Unsplash 圖片庫</h4>
-                            <span class="text-[9px] text-gray-600">無需 API Key</span>
-                         </div>
-                        <div class="flex gap-2">
-                          <div class="relative flex-1">
-                            <input v-model="unsplashSearchQuery" 
-                                   @keydown.enter="searchUnsplash"
-                                   type="text" 
-                                   placeholder="搜尋背景 (例如: nature, office)..." 
-                                   class="w-full bg-slate-950/50 border border-white/5 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-emerald-500 transition-all placeholder-white/20">
-                            <div v-if="isSearchingUnsplash" class="absolute right-3 top-2.5">
-                              <svg class="animate-spin h-5 w-5 text-emerald-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                              </svg>
-                            </div>
-                          </div>
-                          <button @click="searchUnsplash" 
-                                  :disabled="isSearchingUnsplash"
-                                  class="px-5 py-2 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-500 hover:text-white rounded-xl text-xs font-black transition-all disabled:opacity-50 border border-emerald-500/30">
+                    <div class="bg-white/5 p-4 rounded-3xl border border-white/5">
+                      <div class="flex gap-2 mb-4">
+                         <input v-model="unsplashSearchQuery" 
+                                @keydown.enter="searchUnsplash"
+                                type="text" 
+                                placeholder="搜尋 Unsplash 背景..." 
+                                class="flex-1 bg-slate-950/50 border border-white/5 rounded-xl px-4 py-2 text-xs focus:outline-none focus:border-emerald-500 transition-all placeholder-white/20">
+                          <button @click="searchUnsplash" :disabled="isSearchingUnsplash" class="px-3 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-500 hover:text-white rounded-xl text-xs font-black transition-all border border-emerald-500/30">
                             搜尋
                           </button>
-                        </div>
                       </div>
 
-                      <!-- Search Results Grid -->
-                      <div v-if="unsplashResults.length" class="grid grid-cols-4 gap-3 mt-4 animate-fade-in max-h-48 overflow-y-auto pr-2 scrollbar-hide">
-                        <div v-for="(img, idx) in unsplashResults" :key="idx" 
+                      <div v-if="unsplashResults.length || customBackgrounds.length" class="grid grid-cols-4 gap-2 max-h-40 overflow-y-auto pr-1 scrollbar-hide">
+                        <!-- Custom Backgrounds -->
+                        <div v-for="bg in customBackgrounds" :key="'cb-'+bg.id" 
+                             @click="currentBoard!.backgroundImage = bg.url"
+                             :class="['aspect-video rounded-lg bg-cover bg-center cursor-pointer border-2 transition-all relative group', currentBoard?.backgroundImage === bg.url ? 'border-emerald-500 scale-95' : 'border-white/5 hover:border-white/30']"
+                             :style="{ backgroundImage: `url(${bg.url})` }">
+                             <button @click.stop="handleDeleteBackground(bg.id, bg.publicId, bg.resourceType)" class="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all shadow-xl z-20">
+                               <span class="text-[10px]">×</span>
+                             </button>
+                        </div>
+                        <!-- Unsplash -->
+                        <div v-for="(img, idx) in unsplashResults" :key="'un-'+idx" 
                              @click="selectUnsplashImage(img)"
-                             :class="['aspect-video rounded-xl bg-cover bg-center cursor-pointer border-2 transition-all hover:scale-105 z-10', currentBoard?.backgroundImage === img ? 'border-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.4)]' : 'border-transparent hover:border-white/30']"
+                             :class="['aspect-video rounded-lg bg-cover bg-center cursor-pointer border-2 transition-all hover:opacity-80', currentBoard?.backgroundImage === img ? 'border-emerald-500 scale-95' : 'border-transparent']"
                              :style="{ backgroundImage: `url(${img})` }">
                         </div>
                       </div>
                     </div>
-
-                    <div class="pt-4 border-t border-white/5">
-                      <div class="flex justify-between items-center mb-4">
-                        <h4 class="text-[10px] font-black text-gray-500 uppercase tracking-widest leading-none">自定義上傳</h4>
-                        <input ref="backgroundFileInput" type="file" accept="image/*" class="hidden" @change="handleBackgroundUpload">
-                        <button @click="backgroundFileInput?.click()" 
-                                :disabled="isUploadingBackground"
-                                class="px-3 py-1.5 bg-white/5 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition-all flex items-center gap-2 border border-white/10">
-                          {{ isUploadingBackground ? '上傳中...' : '+ 選擇檔案' }}
-                        </button>
-                      </div>
-                      
-                      <div v-if="customBackgrounds.length" class="grid grid-cols-4 gap-3">
-                        <div v-for="bg in customBackgrounds" :key="bg.id" 
-                             @click="currentBoard!.backgroundImage = bg.url"
-                             :class="['aspect-video rounded-xl bg-cover bg-center cursor-pointer border-2 transition-all relative group', currentBoard?.backgroundImage === bg.url ? 'border-emerald-500 scale-105' : 'border-white/5 hover:border-white/20']"
-                             :style="{ backgroundImage: `url(${bg.url})` }">
-                             <button @click.stop="handleDeleteBackground(bg.id, bg.publicId, bg.resourceType)" 
-                                     class="absolute -top-2 -right-2 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all shadow-xl z-20">
-                                 <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                             </button>
-                        </div>
-                      </div>
-                    </div>
                   </div>
                 </div>
               </div>
-
-              <!-- Tab: Privacy & Permissions -->
-              <div v-if="settingsTab === 'privacy'" :key="'privacy'" class="space-y-8">
-                <div>
-                   <label class="block text-xs font-black text-emerald-400 uppercase tracking-widest mb-4">權限模式</label>
-                   <div class="grid gap-3">
-                      <label v-for="p in [
-                        { id: 'public', label: '公開看板', desc: '任何知道連結的人皆可存取', icon: 'M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8z', color: 'text-emerald-400' },
-                        { id: 'password', label: '密碼保護', desc: '訪客需輸入密碼才能瀏覽', icon: 'M19 11H5a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7a2 2 0 0 0-2-2zM7 11V7a5 5 0 0 1 10 0v4', color: 'text-blue-400' },
-                        { id: 'private', label: '完全私密', desc: '僅限擁有者（您）可以進入', icon: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z', color: 'text-red-400' }
-                      ]" :key="p.id" 
-                             :class="['flex items-center gap-4 cursor-pointer p-4 rounded-3xl border-2 transition-all group/opt', 
-                                       currentBoard!.privacy === p.id ? 'border-emerald-500 bg-emerald-500/10' : 'border-white/5 bg-white/5 hover:border-white/20']">
-                          <input type="radio" v-model="currentBoard!.privacy" :value="p.id" class="sr-only">
-                          <div :class="['w-12 h-12 rounded-2xl bg-black/20 flex items-center justify-center group-hover/opt:scale-110 transition-transform', p.color]">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path :d="p.icon"/></svg>
-                          </div>
-                          <div class="flex-1">
-                            <span class="text-sm font-black block text-white">{{ p.label }}</span>
-                            <span class="text-[11px] text-gray-500 font-bold uppercase tracking-tight">{{ p.desc }}</span>
-                          </div>
-                          <div v-if="currentBoard!.privacy === p.id" class="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)]"></div>
-                      </label>
-                   </div>
-                </div>
-
-                <div v-if="currentBoard!.privacy === 'password'" class="animate-scale-in">
-                  <label class="block text-xs font-black text-gray-500 uppercase tracking-widest mb-2 px-2">存取密碼</label>
-                  <input v-model="currentBoard!.password" 
-                         type="text" 
-                         placeholder="設定 4-12 位存取密碼..." 
-                         class="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-3 text-sm focus:outline-none focus:border-emerald-500 font-mono tracking-widest">
-                </div>
-
-                <div v-if="currentBoard!.privacy !== 'private'" class="pt-6 border-t border-white/5">
-                   <h4 class="text-xs font-black text-gray-500 uppercase tracking-widest mb-4">內文與審核</h4>
-                   <div class="space-y-4">
-                      <div class="bg-white/5 p-5 rounded-[2rem] border border-white/5 space-y-4">
-                        <div class="flex items-center justify-between">
-                          <span class="text-sm font-black text-gray-200">訪客寫作權限</span>
-                          <div class="flex bg-black/40 p-1 rounded-xl">
-                            <button v-for="p in [{id:'edit',l:'可新增'}, {id:'view',l:'唯讀'}]" :key="p.id"
-                                    @click="currentBoard!.guestPermission = p.id as any"
-                                    :class="['px-4 py-1.5 rounded-lg text-xs font-black transition-all', currentBoard!.guestPermission === p.id ? 'bg-emerald-500 text-white shadow-md' : 'text-gray-500 hover:text-white']">
-                              {{ p.l }}
-                            </button>
-                          </div>
-                        </div>
-                        <div class="h-px bg-white/5"></div>
-                        <div class="flex items-center justify-between group/mod cursor-pointer" @click="currentBoard!.moderationEnabled = !currentBoard!.moderationEnabled">
-                          <div>
-                            <span class="text-sm font-black text-gray-200 block">啟動審核機制</span>
-                            <span class="text-[10px] text-gray-500 font-medium tracking-tight">開啟後，訪客貼文需經您核准後才會公開</span>
-                          </div>
-                          <div :class="['w-12 h-6 rounded-full relative transition-all duration-300', currentBoard!.moderationEnabled ? 'bg-emerald-500' : 'bg-gray-700']">
-                             <div :class="['absolute top-1 w-4 h-4 bg-white rounded-full transition-all duration-300', currentBoard!.moderationEnabled ? 'left-7' : 'left-1']"></div>
-                          </div>
-                        </div>
-                      </div>
-                   </div>
-                </div>
-
-                <div class="pt-10">
-                   <h4 class="text-xs font-black text-red-500 uppercase tracking-widest mb-4">危險區域</h4>
-                   <button @click="deleteBoard" class="w-full flex items-center justify-between p-5 rounded-[2rem] border-2 border-red-500/10 bg-red-500/5 hover:bg-red-500/10 transition-all group">
-                      <div class="flex items-center gap-4">
-                        <div class="w-10 h-10 rounded-xl bg-red-500/20 text-red-500 flex items-center justify-center">
-                          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
-                        </div>
-                        <div class="text-left">
-                          <span class="text-sm font-black text-red-500 block">刪除此看板</span>
-                          <span class="text-[10px] text-red-500/60 font-medium">警告：此操作不可復原，所有資料將永久消失</span>
-                        </div>
-                      </div>
-                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="text-red-500/50 group-hover:translate-x-1 transition-transform"><path d="M9 18l6-6-6-6"/></svg>
-                   </button>
-                </div>
-              </div>
-              <!-- Tab: System & Advanced -->
-              <div v-if="settingsTab === 'system'" :key="'system'" class="space-y-8 pb-10">
-                
-                <!-- Section: Global Branding -->
-                <div class="space-y-4">
-                  <h3 class="text-sm font-black text-emerald-400 uppercase tracking-widest flex items-center gap-2">
-                    <span class="w-1 h-4 bg-emerald-500 rounded-full"></span>
-                    網站全域設定
-                  </h3>
-                  <div class="bg-white/5 border border-white/10 rounded-[2rem] p-6 space-y-6">
-                    <div>
-                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2 px-1">網站總標題</label>
-                        <input v-model="appConfig.appTitle" 
-                               type="text" 
-                               placeholder="範例: 我的專屬互動空間"
-                               class="w-full bg-slate-950/50 border border-white/5 rounded-2xl px-5 py-3.5 focus:outline-none focus:border-emerald-500 transition-all font-bold">
-                    </div>
-                    <div>
-                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2 px-1">建立者白名單 (逗號分隔 Email)</label>
-                        <textarea v-model="whitelistInput" 
-                                  @blur="updateWhitelist"
-                                  placeholder="範例: user1@gmail.com, user2@gmail.com"
-                                  rows="3"
-                                  class="w-full bg-slate-950/50 border border-white/5 rounded-2xl px-5 py-3.5 focus:outline-none focus:border-emerald-500 transition-all font-mono text-xs resize-none"></textarea>
-                        <p class="text-[10px] text-gray-500 mt-2 px-1 italic">若留空則開放所有登入帳號建立看板。</p>
-                    </div>
-                    <button @click="saveGlobalSettings" 
-                            class="w-full py-3.5 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-400 hover:text-white rounded-2xl font-black transition-all border border-emerald-500/30">
-                        儲存全域設定至資料庫
-                    </button>
-                  </div>
-                </div>
-
-                <!-- Section: Cloudinary Config -->
-                <div class="space-y-4">
-                  <h3 class="text-sm font-black text-blue-400 uppercase tracking-widest flex items-center gap-2">
-                    <span class="w-1 h-4 bg-blue-500 rounded-full"></span>
-                    雲端多媒體 (Cloudinary)
-                  </h3>
-                  <div class="bg-white/5 border border-white/10 rounded-[2rem] p-6 space-y-6">
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                            <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2 px-1">Cloud Name</label>
-                            <input v-model="appConfig.cloudinary.cloudName" 
-                                   type="text" 
-                                   placeholder="demo-cloud"
-                                   class="w-full bg-slate-950/50 border border-white/5 rounded-2xl px-5 py-3 text-sm focus:outline-none focus:border-blue-500 transition-all font-mono">
-                        </div>
-                        <div>
-                            <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2 px-1">Upload Preset</label>
-                            <input v-model="appConfig.cloudinary.uploadPreset" 
-                                   type="text" 
-                                   placeholder="unsigned-preset"
-                                   class="w-full bg-slate-950/50 border border-white/5 rounded-2xl px-5 py-3 text-sm focus:outline-none focus:border-blue-500 transition-all font-mono">
-                        </div>
-                    </div>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                            <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2 px-1">API Key</label>
-                            <input v-model="appConfig.cloudinary.apiKey" 
-                                   type="text" 
-                                   class="w-full bg-slate-950/50 border border-white/5 rounded-2xl px-5 py-3 text-sm focus:outline-none focus:border-blue-500 transition-all font-mono">
-                        </div>
-                        <div>
-                            <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2 px-1">API Secret</label>
-                            <input v-model="appConfig.cloudinary.apiSecret" 
-                                   type="password" 
-                                   class="w-full bg-slate-950/50 border border-white/5 rounded-2xl px-5 py-3 text-sm focus:outline-none focus:border-blue-500 transition-all font-mono">
-                        </div>
-                    </div>
-                    <button @click="saveCloudinaryConfig" 
-                            class="w-full py-3.5 bg-blue-600/20 hover:bg-blue-600 text-blue-400 hover:text-white rounded-2xl font-black transition-all border border-blue-500/30">
-                        同步雲媒體設定至資料庫
-                    </button>
-                    <p class="text-[9px] text-gray-500 text-center font-bold">🔒 API Secret 已在資料庫層級加密，且不會包含在分享連結中。</p>
-                  </div>
-                </div>
-              </div>
-            </transition-group>
+            </transition>
           </div>
         </div>
 
@@ -3786,8 +2629,7 @@ const formatRelativeTime = (date: Date) => {
          @keydown.left="navigatePost('prev')"
          @keydown.right="navigatePost('next')"
          @keydown.escape="closePostDetail"
-         tabindex="0"
-         ref="postDetailModal">
+         tabindex="0">
       
       <!-- Navigation Group -->
       <div class="relative flex items-center justify-center w-full max-w-7xl gap-6 h-full pointer-events-none" @click.stop>
@@ -3861,7 +2703,7 @@ const formatRelativeTime = (date: Date) => {
                 </div>
                 <div class="mt-4 pt-4 border-t border-slate-200/50 flex justify-between items-center px-2">
                     <span class="text-xs font-black text-slate-400 uppercase tracking-widest">{{ expandedPost.poll.totalVotes }} 總票數</span>
-                    <span v-if="expandedPost.poll.options.some(opt => opt.voters.includes(authStore.user?.uid || (guestName ? 'guest:'+guestName : '')))" 
+                    <span v-if="expandedPost.poll.options.some((opt: any) => opt.voters.includes(authStore.user?.uid || (guestName ? 'guest:'+guestName : '')))" 
                           class="text-[10px] font-black text-emerald-600 bg-emerald-100 px-2 py-0.5 rounded-full uppercase tracking-tighter">
                       已投票
                     </span>
@@ -3983,7 +2825,7 @@ const formatRelativeTime = (date: Date) => {
                      @keydown.enter="submitComment(expandedPost!)"
                      type="text" 
                      placeholder="寫下你的想法..." 
-                     class="flex-1 bg-transparent px-4 py-2 text-sm outline-none font-medium placeholder-slate-400">
+                     class="flex-1 bg-transparent px-4 py-2 text-sm outline-none font-black text-slate-900 placeholder-slate-500">
               <button @click="submitComment(expandedPost!)" class="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-2xl font-black text-xs shadow-lg shadow-emerald-900/20 active:scale-95 transition-all">發佈</button>
             </div>
           </div>
@@ -4198,6 +3040,32 @@ const formatRelativeTime = (date: Date) => {
 }
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
   background: rgba(255,255,255,0.2);
+}
+
+
+/* Prevent selection during drag to avoid Super Drag interference */
+.sortable-drag {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+.post-drag-handle {
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: move !important;
+}
+
+/* Disable native drag only for specific problematic child elements to allow move handles to work */
+.ahmo-post-card img,
+.ahmo-post-card a,
+.ahmo-post-card video {
+  -webkit-user-drag: none !important;
+}
+
+.ahmo-post-card h4,
+.ahmo-post-card .text-gray-700 {
+  user-select: none !important;
+  -webkit-user-select: none !important;
 }
 
 @keyframes scale-in {
